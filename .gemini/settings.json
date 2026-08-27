@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "3gpp-server": {
+      "command": "npx",
+      "args": ["-y", "3gpp-mcp-charging@latest", "serve"],
+      "env": {
+        "HUGGINGFACE_TOKEN": "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"
+      }
+    }
+  }
+}

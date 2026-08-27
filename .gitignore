@@ -1,0 +1,20 @@
+# Virtual Environment
+.venv/
+env/
+venv/
+ENV/
+
+# Secrets & Environment Variables (DO NOT COMMIT)
+.env
+.env.local
+*.env
+
+# Python Cache & Bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# OS Specific
+.DS_Store
+Thumbs.db
