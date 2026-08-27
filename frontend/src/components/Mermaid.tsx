@@ -2,6 +2,7 @@
 
 import React, { useEffect, useId, useState } from "react";
 import mermaid from "mermaid";
+import { Maximize2, ZoomIn, ZoomOut, RotateCcw, X } from "lucide-react";
 
 let mermaidInitialized = false;
 
@@ -44,7 +45,6 @@ function sanitizeMermaid(chart: string): string {
   return chart
     .split("\n")
     .map((line) => {
-      // If line has node definition with [ ... ] and unquoted special chars like ( ) / & :
       return line.replace(
         /(\b\w+)\s*\[([^"\]\n]*[()\/&:#,][^"\]\n]*)\]/g,
         '$1["$2"]'
@@ -62,7 +62,6 @@ function stripStyles(chart: string): string {
 
 function cleanStrayDOMElements() {
   if (typeof document !== "undefined") {
-    // Remove any stray error elements injected by mermaid on document.body
     const strayErrors = document.querySelectorAll(
       'div[id^="dmermaid"], div[id^="mermaid-"], svg[id^="dmermaid"]'
     );
@@ -83,6 +82,28 @@ export function Mermaid({ chart }: MermaidProps) {
   const id = `mm-${rawId.replace(/[^a-zA-Z0-9]/g, "")}`;
   const [svg, setSvg] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [zoom, setZoom] = useState(1);
+
+  // Close modal on Escape key
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setIsModalOpen(false);
+      }
+    };
+    if (isModalOpen) {
+      window.addEventListener("keydown", handleKeyDown);
+      document.body.style.overflow = "hidden";
+    } else {
+      document.body.style.overflow = "unset";
+      setZoom(1);
+    }
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      document.body.style.overflow = "unset";
+    };
+  }, [isModalOpen]);
 
   useEffect(() => {
     let isMounted = true;
@@ -103,7 +124,6 @@ export function Mermaid({ chart }: MermaidProps) {
       for (let i = 0; i < candidates.length; i++) {
         const codeToTest = candidates[i];
         try {
-          // Test parse first (suppressErrorRendering prevents DOM error bomb injection)
           const isValid = await mermaid.parse(codeToTest, { suppressErrors: true });
           if (!isValid) continue;
 
@@ -117,11 +137,9 @@ export function Mermaid({ chart }: MermaidProps) {
           }
         } catch {
           cleanStrayDOMElements();
-          // continue to next candidate
         }
       }
 
-      // If all candidates failed parse/render, gracefully fallback without DOM bombs
       if (isMounted) {
         cleanStrayDOMElements();
         setError("Diagram syntax could not be rendered visually");
@@ -158,9 +176,97 @@ export function Mermaid({ chart }: MermaidProps) {
   }
 
   return (
-    <div
-      className="my-4 p-4 bg-slate-950/70 border border-slate-800/80 rounded-2xl overflow-x-auto flex justify-center shadow-lg shadow-black/40 max-w-full [&_svg]:max-w-full [&_svg]:h-auto"
-      dangerouslySetInnerHTML={{ __html: svg }}
-    />
+    <>
+      {/* Clickable Diagram Card with Zoom Indicator */}
+      <div className="relative group my-4">
+        <div
+          onClick={() => setIsModalOpen(true)}
+          title="Click to enlarge diagram"
+          className="cursor-zoom-in p-4 bg-slate-950/70 hover:bg-slate-950/90 border border-slate-800 hover:border-indigo-500/50 rounded-2xl overflow-x-auto flex justify-center shadow-lg shadow-black/40 max-w-full transition duration-150 [&_svg]:max-w-full [&_svg]:h-auto"
+          dangerouslySetInnerHTML={{ __html: svg }}
+        />
+        {/* Hover Action Badge */}
+        <button
+          onClick={() => setIsModalOpen(true)}
+          className="absolute top-3 right-3 opacity-0 group-hover:opacity-100 transition-opacity duration-150 flex items-center gap-1 px-2.5 py-1 bg-indigo-600/90 hover:bg-indigo-600 text-white rounded-lg text-[11px] font-medium shadow-md backdrop-blur"
+        >
+          <Maximize2 className="w-3.5 h-3.5" />
+          <span>Enlarge</span>
+        </button>
+      </div>
+
+      {/* Full-Screen Lightbox / Zoom Modal */}
+      {isModalOpen && (
+        <div
+          className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex flex-col items-center justify-center p-4 md:p-8 animate-in fade-in duration-200"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setIsModalOpen(false);
+          }}
+        >
+          {/* Floating Controls Header */}
+          <div className="w-full max-w-5xl flex items-center justify-between pb-4">
+            <div className="flex items-center gap-2 text-slate-300 text-xs font-mono">
+              <span className="px-2.5 py-1 bg-slate-800/90 border border-slate-700 rounded-lg">
+                Zoom: {Math.round(zoom * 100)}%
+              </span>
+              <span className="text-slate-500 text-[11px] hidden sm:inline">
+                (Press Esc or click outside to close)
+              </span>
+            </div>
+
+            {/* Toolbar */}
+            <div className="flex items-center gap-2 bg-slate-900/90 border border-slate-700/80 p-1 rounded-xl shadow-xl backdrop-blur">
+              <button
+                onClick={() => setZoom((z) => Math.min(z + 0.25, 3))}
+                title="Zoom In"
+                className="p-1.5 hover:bg-slate-800 rounded-lg text-slate-300 hover:text-white transition"
+              >
+                <ZoomIn className="w-4 h-4" />
+              </button>
+              <button
+                onClick={() => setZoom((z) => Math.max(z - 0.25, 0.5))}
+                title="Zoom Out"
+                className="p-1.5 hover:bg-slate-800 rounded-lg text-slate-300 hover:text-white transition"
+              >
+                <ZoomOut className="w-4 h-4" />
+              </button>
+              <button
+                onClick={() => setZoom(1)}
+                title="Reset Zoom"
+                className="p-1.5 hover:bg-slate-800 rounded-lg text-slate-300 hover:text-white transition"
+              >
+                <RotateCcw className="w-4 h-4" />
+              </button>
+              <div className="w-[1px] h-4 bg-slate-700 mx-1" />
+              <button
+                onClick={() => setIsModalOpen(false)}
+                title="Close"
+                className="p-1.5 hover:bg-red-500/20 text-slate-300 hover:text-red-400 rounded-lg transition"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+
+          {/* Modal SVG Canvas */}
+          <div
+            className="flex-1 w-full max-w-5xl bg-slate-950/90 border border-slate-800 rounded-2xl overflow-auto p-6 flex items-center justify-center shadow-2xl"
+            onClick={(e) => {
+              if (e.target === e.currentTarget) setIsModalOpen(false);
+            }}
+          >
+            <div
+              style={{
+                transform: `scale(${zoom})`,
+                transformOrigin: "center center",
+                transition: "transform 0.15s ease-out",
+              }}
+              className="flex items-center justify-center max-w-none [&_svg]:max-w-none [&_svg]:h-auto"
+              dangerouslySetInnerHTML={{ __html: svg }}
+            />
+          </div>
+        </div>
+      )}
+    </>
   );
 }
