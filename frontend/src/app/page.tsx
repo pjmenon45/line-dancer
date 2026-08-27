@@ -35,7 +35,7 @@ function CodeBlock({ className, children }: { className?: string; children: Reac
   const [copied, setCopied] = useState(false);
   const match = /language-(\w+)/.exec(className || "");
   const language = match ? match[1].toLowerCase() : "";
-  const codeString = String(children).replace(/\n$/, "");
+  const codeString = String(children || "").replace(/\n$/, "");
 
   // Auto-detect Mermaid diagrams even if LLM omitted the `mermaid` language tag
   const isMermaid =
@@ -57,7 +57,7 @@ function CodeBlock({ className, children }: { className?: string; children: Reac
   return (
     <div className="my-3 rounded-xl overflow-hidden border border-slate-700/70 bg-slate-950/80 shadow-md max-w-full">
       <div className="px-3.5 py-1.5 bg-slate-900 border-b border-slate-800 text-[11px] text-slate-400 font-mono flex justify-between items-center">
-        <span className="font-semibold text-slate-300 uppercase tracking-wider">{language || "text"}</span>
+        <span className="font-semibold text-slate-300 uppercase tracking-wider">{language || "code"}</span>
         <button
           onClick={handleCopy}
           className="flex items-center gap-1 text-[11px] text-slate-400 hover:text-indigo-300 transition"
@@ -253,7 +253,7 @@ export default function ChatPage() {
                       remarkPlugins={[remarkGfm]}
                       components={{
                         table: ({ node, ...props }) => (
-                          <div className="my-4 overflow-x-auto border border-slate-700/80 rounded-xl shadow-lg bg-slate-950/60">
+                          <div className="my-4 overflow-x-auto border border-slate-700/80 rounded-xl shadow-lg bg-slate-950/60 max-w-full">
                             <table className="w-full text-left border-collapse text-xs md:text-sm" {...props} />
                           </div>
                         ),
@@ -290,17 +290,30 @@ export default function ChatPage() {
                         ol: ({ node, ...props }) => (
                           <ol className="list-decimal list-inside space-y-1.5 my-2.5 text-slate-300" {...props} />
                         ),
+                        li: ({ node, ...props }) => (
+                          <li className="leading-relaxed text-slate-300" {...props} />
+                        ),
                         blockquote: ({ node, ...props }) => (
                           <blockquote className="my-3 pl-4 border-l-2 border-indigo-500 text-slate-400 italic bg-indigo-950/20 py-2 rounded-r-lg" {...props} />
                         ),
-                        code: ({ node, inline, className, children, ...props }: any) => {
-                          if (inline) {
+                        code: ({ node, className, children, ...props }: any) => {
+                          const codeString = String(children || "");
+                          const hasLang = Boolean(className && /language-/.test(className));
+                          const hasNewlines = codeString.includes("\n");
+
+                          // If it's an inline code snippet (e.g. `ue-CategoryRedCap`)
+                          if (!hasLang && !hasNewlines) {
                             return (
-                              <code className="bg-slate-800 text-indigo-300 px-1.5 py-0.5 rounded text-[13px] font-mono border border-slate-700/60" {...props}>
+                              <code
+                                className="bg-slate-800/90 text-indigo-300 px-1.5 py-0.5 rounded text-[12px] font-mono border border-slate-700/60 break-all inline"
+                                {...props}
+                              >
                                 {children}
                               </code>
                             );
                           }
+
+                          // Multi-line code block or explicit language (Mermaid / JSON / ASN.1)
                           return <CodeBlock className={className}>{children}</CodeBlock>;
                         },
                       }}
@@ -312,7 +325,7 @@ export default function ChatPage() {
 
                 {/* Collapsible Evidence Pack */}
                 {m.evidence && (
-                  <div className="border border-slate-800 rounded-xl bg-slate-950/60 overflow-hidden shadow-sm">
+                  <div className="border border-slate-800 rounded-xl bg-slate-950/60 overflow-hidden shadow-sm max-w-full">
                     <button
                       onClick={() => toggleEvidence(idx)}
                       className="w-full px-3.5 py-2.5 text-xs flex items-center justify-between text-slate-400 hover:text-slate-200 bg-slate-900/60 transition"

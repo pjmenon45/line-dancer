@@ -9,6 +9,7 @@ function initMermaid() {
   if (typeof window !== "undefined" && !mermaidInitialized) {
     mermaid.initialize({
       startOnLoad: false,
+      suppressErrorRendering: true,
       theme: "dark",
       securityLevel: "loose",
       fontFamily: "ui-sans-serif, system-ui, sans-serif",
@@ -35,12 +36,15 @@ function initMermaid() {
   }
 }
 
+/**
+ * Auto-quotes unquoted node labels with parentheses, slashes, or special symbols
+ * e.g., NodeA[Text (with details) / extra] -> NodeA["Text (with details) / extra"]
+ */
 function sanitizeMermaid(chart: string): string {
   return chart
     .split("\n")
     .map((line) => {
-      // Auto-quote square bracket node labels that contain parentheses, slashes, or special characters:
-      // e.g. Node[Text (detail) / extra] -> Node["Text (detail) / extra"]
+      // If line has node definition with [ ... ] and unquoted special chars like ( ) / & :
       return line.replace(
         /(\b\w+)\s*\[([^"\]\n]*[()\/&:#,][^"\]\n]*)\]/g,
         '$1["$2"]'
@@ -50,11 +54,24 @@ function sanitizeMermaid(chart: string): string {
 }
 
 function stripStyles(chart: string): string {
-  // Strip style and class lines if they contain malformed CSS syntax
   return chart
     .split("\n")
     .filter((line) => !line.trim().startsWith("style ") && !line.trim().startsWith("classDef "))
     .join("\n");
+}
+
+function cleanStrayDOMElements() {
+  if (typeof document !== "undefined") {
+    // Remove any stray error elements injected by mermaid on document.body
+    const strayErrors = document.querySelectorAll(
+      'div[id^="dmermaid"], div[id^="mermaid-"], svg[id^="dmermaid"]'
+    );
+    strayErrors.forEach((el) => {
+      if (el.parentElement === document.body) {
+        el.remove();
+      }
+    });
+  }
 }
 
 interface MermaidProps {
@@ -63,7 +80,7 @@ interface MermaidProps {
 
 export function Mermaid({ chart }: MermaidProps) {
   const rawId = useId();
-  const id = `mermaid-${rawId.replace(/:/g, "")}`;
+  const id = `mm-${rawId.replace(/[^a-zA-Z0-9]/g, "")}`;
   const [svg, setSvg] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
 
@@ -72,30 +89,42 @@ export function Mermaid({ chart }: MermaidProps) {
     initMermaid();
 
     async function renderChart() {
-      if (!chart.trim()) return;
+      if (!chart || !chart.trim()) return;
 
+      const raw = chart.trim();
+      const sanitized = sanitizeMermaid(raw);
       const candidates = [
-        sanitizeMermaid(chart.trim()),
-        stripStyles(sanitizeMermaid(chart.trim())),
-        chart.trim(),
+        sanitized,
+        stripStyles(sanitized),
+        raw,
+        stripStyles(raw),
       ];
 
       for (let i = 0; i < candidates.length; i++) {
+        const codeToTest = candidates[i];
         try {
-          const candidateId = `${id}-${i}`;
-          const { svg: renderedSvg } = await mermaid.render(candidateId, candidates[i]);
+          // Test parse first (suppressErrorRendering prevents DOM error bomb injection)
+          const isValid = await mermaid.parse(codeToTest, { suppressErrors: true });
+          if (!isValid) continue;
+
+          const renderId = `${id}-${i}`;
+          const { svg: renderedSvg } = await mermaid.render(renderId, codeToTest);
           if (isMounted) {
             setSvg(renderedSvg);
             setError(null);
+            cleanStrayDOMElements();
             return;
           }
-        } catch (err: any) {
-          // If last candidate fails, report error
-          if (i === candidates.length - 1 && isMounted) {
-            console.warn("Mermaid render fallback failed:", err);
-            setError(err?.message || "Syntax error in Mermaid diagram");
-          }
+        } catch {
+          cleanStrayDOMElements();
+          // continue to next candidate
         }
+      }
+
+      // If all candidates failed parse/render, gracefully fallback without DOM bombs
+      if (isMounted) {
+        cleanStrayDOMElements();
+        setError("Diagram syntax could not be rendered visually");
       }
     }
 
@@ -103,23 +132,26 @@ export function Mermaid({ chart }: MermaidProps) {
 
     return () => {
       isMounted = false;
+      cleanStrayDOMElements();
     };
   }, [chart, id]);
 
   if (error) {
     return (
-      <div className="my-3 p-3 bg-slate-900/90 border border-amber-500/30 rounded-xl text-xs font-mono text-slate-300">
-        <div className="text-amber-400 font-semibold mb-1 flex items-center gap-1.5">
-          <span>⚠️ Diagram Syntax View (raw code)</span>
+      <div className="my-3 p-3 bg-slate-900/90 border border-slate-800 rounded-xl text-xs font-mono text-slate-300 max-w-full overflow-hidden">
+        <div className="text-slate-400 font-semibold mb-1 text-[11px] flex items-center justify-between">
+          <span>📊 Flowchart / Sequence (Raw Specification Text)</span>
         </div>
-        <pre className="overflow-x-auto text-[11px] text-slate-400">{chart}</pre>
+        <pre className="overflow-x-auto text-[11px] text-slate-400 font-mono leading-relaxed p-2 bg-black/40 rounded-lg">
+          {chart}
+        </pre>
       </div>
     );
   }
 
   if (!svg) {
     return (
-      <div className="my-3 p-6 bg-slate-950/40 border border-slate-800 rounded-xl flex items-center justify-center text-xs text-slate-400 font-mono">
+      <div className="my-3 p-4 bg-slate-950/40 border border-slate-800/80 rounded-xl flex items-center justify-center text-xs text-slate-400 font-mono">
         <span className="animate-pulse">Rendering diagram...</span>
       </div>
     );
@@ -127,7 +159,7 @@ export function Mermaid({ chart }: MermaidProps) {
 
   return (
     <div
-      className="my-4 p-4 bg-slate-950/70 border border-slate-800/80 rounded-2xl overflow-x-auto flex justify-center shadow-lg shadow-black/40 [&_svg]:max-w-full [&_svg]:h-auto"
+      className="my-4 p-4 bg-slate-950/70 border border-slate-800/80 rounded-2xl overflow-x-auto flex justify-center shadow-lg shadow-black/40 max-w-full [&_svg]:max-w-full [&_svg]:h-auto"
       dangerouslySetInnerHTML={{ __html: svg }}
     />
   );
