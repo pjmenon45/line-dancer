@@ -34,11 +34,17 @@ const SAMPLE_QUESTIONS = [
 function CodeBlock({ className, children }: { className?: string; children: React.ReactNode }) {
   const [copied, setCopied] = useState(false);
   const match = /language-(\w+)/.exec(className || "");
-  const language = match ? match[1] : "";
+  const language = match ? match[1].toLowerCase() : "";
   const codeString = String(children).replace(/\n$/, "");
 
-  // Render Mermaid diagrams directly
-  if (language === "mermaid") {
+  // Auto-detect Mermaid diagrams even if LLM omitted the `mermaid` language tag
+  const isMermaid =
+    language === "mermaid" ||
+    /^\s*(flowchart|graph|sequenceDiagram|classDiagram|stateDiagram|erDiagram|gantt|pie|gitGraph|journey|mindmap)\b/i.test(
+      codeString.trim()
+    );
+
+  if (isMermaid) {
     return <Mermaid chart={codeString} />;
   }
 
@@ -49,7 +55,7 @@ function CodeBlock({ className, children }: { className?: string; children: Reac
   };
 
   return (
-    <div className="my-3 rounded-xl overflow-hidden border border-slate-700/70 bg-slate-950/80 shadow-md">
+    <div className="my-3 rounded-xl overflow-hidden border border-slate-700/70 bg-slate-950/80 shadow-md max-w-full">
       <div className="px-3.5 py-1.5 bg-slate-900 border-b border-slate-800 text-[11px] text-slate-400 font-mono flex justify-between items-center">
         <span className="font-semibold text-slate-300 uppercase tracking-wider">{language || "text"}</span>
         <button
@@ -60,7 +66,7 @@ function CodeBlock({ className, children }: { className?: string; children: Reac
           <span>{copied ? "Copied" : "Copy"}</span>
         </button>
       </div>
-      <pre className="p-3.5 text-xs overflow-x-auto font-mono text-slate-200 leading-relaxed">
+      <pre className="p-3.5 text-xs overflow-x-auto font-mono text-slate-200 leading-relaxed max-w-full">
         <code>{codeString}</code>
       </pre>
     </div>
@@ -232,9 +238,9 @@ export default function ChatPage() {
                   <Bot className="w-4 h-4 text-indigo-400" />
                 </div>
               )}
-              <div className={`max-w-[90%] md:max-w-[85%] space-y-3 ${m.role === "user" ? "items-end" : "items-start"}`}>
+              <div className={`flex-1 min-w-0 max-w-[90%] md:max-w-[85%] space-y-3 ${m.role === "user" ? "items-end" : "items-start"}`}>
                 <div
-                  className={`p-4 md:p-5 rounded-2xl text-sm leading-relaxed ${
+                  className={`p-4 md:p-5 rounded-2xl text-sm leading-relaxed max-w-full overflow-hidden ${
                     m.role === "user"
                       ? "bg-indigo-600 text-white rounded-br-none shadow-md shadow-indigo-950/40"
                       : "bg-slate-900/90 border border-slate-800 text-slate-200 rounded-bl-none shadow-lg shadow-black/20"
