@@ -59,6 +59,16 @@ class ChatResponse(BaseModel):
     evidence: str | None = None
 
 
+@app.get("/")
+async def root() -> dict[str, str]:
+    return {
+        "service": "3GPP Research & Gap Analysis API",
+        "status": "running",
+        "docs": "/docs",
+        "health": "/health",
+    }
+
+
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -90,37 +100,26 @@ async def chat_stream(req: ChatRequest) -> StreamingResponse:
     """
 
     async def event_generator():
+        yield _sse(
+            "status",
+            {"stage": "researcher", "message": "Gathering evidence from 3GPP specifications…"},
+        )
         try:
-            async with mcp_session() as client:
-                yield _sse(
-                    "status",
-                    {"stage": "researcher", "message": "Gathering evidence…"},
-                )
-                researcher = ResearcherAgent(client)
-                evidence = await researcher.run(
-                    req.message,
-                    series=req.series,
-                    releases=req.releases,
-                )
+            result = await run_research_gap_analysis(
+                req.message,
+                series=req.series,
+                releases=req.releases,
+            )
+            if req.include_evidence and result.get("evidence"):
+                yield _sse("evidence", {"text": result["evidence"]})
 
-                if req.include_evidence:
-                    yield _sse("evidence", {"text": evidence})
-
-                yield _sse(
-                    "status",
-                    {"stage": "analyst", "message": "Synthesizing answer…"},
-                )
-                analyst = AnalystAgent(client)
-                answer = await analyst.run(
-                    req.message,
-                    evidence,
-                    series=req.series,
-                    releases=req.releases,
-                )
-
-                yield _sse("answer", {"text": answer})
-                yield _sse("done", {})
+            yield _sse("status", {"stage": "analyst", "message": "Synthesizing technical report…"})
+            yield _sse("answer", {"text": result["answer"]})
+            yield _sse("done", {})
         except Exception as exc:  # noqa: BLE001
+            import traceback
+            print(f"[Error in chat_stream]: {exc}")
+            traceback.print_exc()
             yield _sse("error", {"detail": str(exc)})
 
     return StreamingResponse(

@@ -100,6 +100,17 @@ export default function ChatPage() {
               }
               return updated;
             });
+          } else if (event === "error") {
+            assistantMsg.content = `❌ **Backend Error:** ${data.detail || "An unexpected error occurred during research."}`;
+            setMessages((prev) => {
+              const updated = [...prev];
+              if (updated[updated.length - 1]?.role === "assistant") {
+                updated[updated.length - 1] = assistantMsg;
+              } else {
+                updated.push(assistantMsg);
+              }
+              return updated;
+            });
           }
         }
       }

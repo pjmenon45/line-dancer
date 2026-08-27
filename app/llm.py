@@ -17,7 +17,7 @@ def get_llm_client() -> AsyncOpenAI:
 
 
 def get_model_name() -> str:
-    return os.getenv("LLM_MODEL", "llama-3.3-70b-versatile")
+    return os.getenv("LLM_MODEL", "openai/gpt-oss-120b")
 
 
 async def chat_completion(
@@ -27,8 +27,9 @@ async def chat_completion(
 ) -> Any:
     """Single chat completion call. Returns the raw OpenAI message object."""
     client = get_llm_client()
+    model_name = get_model_name()
     kwargs: dict[str, Any] = {
-        "model": get_model_name(),
+        "model": model_name,
         "messages": messages,
     }
     if tools:
@@ -36,5 +37,11 @@ async def chat_completion(
         if tool_choice is not None:
             kwargs["tool_choice"] = tool_choice
 
-    response = await client.chat.completions.create(**kwargs)
-    return response.choices[0].message
+    print(f"  [LLM] Calling model: {model_name}...")
+    try:
+        response = await client.chat.completions.create(**kwargs)
+        print(f"  [LLM] Response received from {model_name}.")
+        return response.choices[0].message
+    except Exception as exc:
+        print(f"  [LLM Error] Error calling {model_name}: {exc}")
+        raise
