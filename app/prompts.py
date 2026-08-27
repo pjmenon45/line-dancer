@@ -30,6 +30,9 @@ Your job:
 - Visual formatting:
   * Use GitHub-flavored markdown tables for multi-release comparisons, feature matrices, parameter lists, or timer summaries.
   * Use Mermaid diagrams (fenced with ```mermaid) for call flows, RRC state transitions, protocol stacks, or architecture interactions where helpful.
+  * MERMAID SYNTAX RULES:
+    - ALWAYS wrap node text labels in double quotes inside brackets: e.g. NodeA["Legacy UE (full capability)"] instead of NodeA[Legacy UE (full capability)].
+    - Avoid complex inline style lines to prevent syntax errors.
 
 Mandatory output format:
 1. Direct answer (2–4 sentences)

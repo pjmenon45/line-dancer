@@ -35,6 +35,28 @@ function initMermaid() {
   }
 }
 
+function sanitizeMermaid(chart: string): string {
+  return chart
+    .split("\n")
+    .map((line) => {
+      // Auto-quote square bracket node labels that contain parentheses, slashes, or special characters:
+      // e.g. Node[Text (detail) / extra] -> Node["Text (detail) / extra"]
+      return line.replace(
+        /(\b\w+)\s*\[([^"\]\n]*[()\/&:#,][^"\]\n]*)\]/g,
+        '$1["$2"]'
+      );
+    })
+    .join("\n");
+}
+
+function stripStyles(chart: string): string {
+  // Strip style and class lines if they contain malformed CSS syntax
+  return chart
+    .split("\n")
+    .filter((line) => !line.trim().startsWith("style ") && !line.trim().startsWith("classDef "))
+    .join("\n");
+}
+
 interface MermaidProps {
   chart: string;
 }
@@ -51,16 +73,28 @@ export function Mermaid({ chart }: MermaidProps) {
 
     async function renderChart() {
       if (!chart.trim()) return;
-      try {
-        const { svg: renderedSvg } = await mermaid.render(id, chart.trim());
-        if (isMounted) {
-          setSvg(renderedSvg);
-          setError(null);
-        }
-      } catch (err: any) {
-        if (isMounted) {
-          console.error("Mermaid render error:", err);
-          setError(err?.message || "Syntax error in Mermaid diagram");
+
+      const candidates = [
+        sanitizeMermaid(chart.trim()),
+        stripStyles(sanitizeMermaid(chart.trim())),
+        chart.trim(),
+      ];
+
+      for (let i = 0; i < candidates.length; i++) {
+        try {
+          const candidateId = `${id}-${i}`;
+          const { svg: renderedSvg } = await mermaid.render(candidateId, candidates[i]);
+          if (isMounted) {
+            setSvg(renderedSvg);
+            setError(null);
+            return;
+          }
+        } catch (err: any) {
+          // If last candidate fails, report error
+          if (i === candidates.length - 1 && isMounted) {
+            console.warn("Mermaid render fallback failed:", err);
+            setError(err?.message || "Syntax error in Mermaid diagram");
+          }
         }
       }
     }
