@@ -20,7 +20,7 @@ def get_llm_client() -> AsyncOpenAI:
 def get_model_name() -> str:
     base_url = os.getenv("LLM_BASE_URL", "").lower()
     if "googleapis" in base_url or "google" in base_url:
-        return os.getenv("LLM_MODEL", "gemini-2.5-flash")
+        return os.getenv("LLM_MODEL", "gemini-3.6-flash")
     return os.getenv("LLM_MODEL", "openai/gpt-oss-120b")
 
 
@@ -30,8 +30,8 @@ def _get_candidate_models() -> list[str]:
     base_url = os.getenv("LLM_BASE_URL", "").lower()
 
     if "googleapis" in base_url or "google" in base_url:
-        # Google Gemini candidate fallbacks
-        for fallback in ["gemini-2.5-flash", "gemini-1.5-flash", "gemini-2.5-pro", "gemini-1.5-pro"]:
+        # Google Gemini candidate fallbacks (latest Google AI Studio model names)
+        for fallback in ["gemini-3.6-flash", "gemini-3.7-flash", "gemini-2.5-flash", "gemini-2.5-pro"]:
             if fallback not in candidates:
                 candidates.append(fallback)
     elif "groq" in base_url:
