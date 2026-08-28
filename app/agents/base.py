@@ -78,8 +78,8 @@ async def run_tool_loop(
                 result_text = f"Tool error ({name}): {exc}"
                 print(f"  <- Tool error: {exc}")
 
-            # Optional tool response truncation (set MAX_TOOL_CHARS=0 in .env for full unlimited output)
-            max_tool_chars = int(os.getenv("MAX_TOOL_CHARS", "0"))
+            # Safe tool response truncation to respect provider TPM limits (e.g. Groq 8k/30k TPM)
+            max_tool_chars = int(os.getenv("MAX_TOOL_CHARS", "6000"))
             if max_tool_chars > 0 and len(result_text) > max_tool_chars:
                 result_text = result_text[:max_tool_chars] + "\n...[truncated to fit token limit]..."
 

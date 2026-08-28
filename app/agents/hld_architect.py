@@ -2,9 +2,17 @@
 
 from __future__ import annotations
 
-from app.agents.base import run_tool_loop
+from typing import Any
+from app.llm import chat_completion
 from app.mcp_client import MCPClient, _default_releases
 from app.prompts import HLD_ARCHITECT_PROMPT
+
+
+def _compact_text(text: str, max_chars: int = 5000) -> str:
+    """Ensure intermediate text fits comfortably within LLM token limits."""
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars] + "\n...[truncated for synthesis efficiency]..."
 
 
 class HLDArchitectAgent:
@@ -24,11 +32,14 @@ class HLDArchitectAgent:
         releases = target_releases or _default_releases()
         desc_clause = f"\nAdditional Context:\n{feature_description}" if feature_description else ""
 
+        compact_impact = _compact_text(impact_map, max_chars=4500)
+        compact_ledger = _compact_text(parameters_ledger, max_chars=4500)
+
         user_message = (
             f"Feature Name: {feature_name}{desc_clause}\n"
             f"Target Releases: {releases}\n\n"
-            f"Stage 1 Specifications Impact Map:\n{impact_map}\n\n"
-            f"Stage 2 Technical Parameters & Interfaces Ledger:\n{parameters_ledger}\n\n"
+            f"Stage 1 Specifications Impact Map:\n{compact_impact}\n\n"
+            f"Stage 2 Technical Parameters & Interfaces Ledger:\n{compact_ledger}\n\n"
             f"Your Task:\n"
             f"Synthesize the master High-Level Design (HLD) document following the mandatory 6-section template:\n"
             f"1. Feature Scope & Executive Summary\n"
@@ -39,10 +50,12 @@ class HLDArchitectAgent:
             f"6. Design Team Open Questions, Technical Risks & Implementation Considerations"
         )
 
-        hld_document = await run_tool_loop(
-            system_prompt=HLD_ARCHITECT_PROMPT,
-            user_message=user_message,
-            mcp=self.mcp,
-            max_rounds=max_rounds,
-        )
-        return hld_document
+        messages = [
+            {"role": "system", "content": HLD_ARCHITECT_PROMPT},
+            {"role": "user", "content": user_message},
+        ]
+
+        # Pure synthesis: omit tool schemas to save ~1,500 tokens and stay safely under TPM limits
+        print("  [Stage 3] Synthesizing master HLD document...")
+        response_msg = await chat_completion(messages, tools=None, tool_choice=None)
+        return response_msg.content or ""
