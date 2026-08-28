@@ -1,76 +1,189 @@
-# 3GPP Research & Gap Analysis Agent
+# 3GPP Standards Research & New Feature HLD Studio
 
-2-agent FastAPI service for Standards Research & Gap Analysis over the lightweight 3GPP MCP (`3gpp-mcp-charging`).
+An end-to-end, multi-agent AI platform for **3GPP Standards Research, Gap Analysis, and High-Level Design (HLD) Synthesis** powered by Model Context Protocol (MCP) and modern LLMs (Google Gemini, Groq, OpenAI).
 
-## Architecture
+---
 
+## 🌟 Key Capabilities
+
+### 1. 💬 Standards Research & Gap Analysis (Mode 1)
+* **Multi-Series 3GPP Search**: Broad retrieval across **TS 23** (Core Architecture/5GC/NWDAF), **TS 24** (NAS/Protocols), **TS 29** (SBI APIs), **TS 32** (Charging/CHF), **TS 33** (Security/5G-AKA), **TS 36** (LTE/NB-IoT), and **TS 38** (5G NR RAN).
+* **Hybrid Grounding + Domain Synthesis**: Accurately grounds findings on verified 3GPP specifications while enriching reports with deep telecommunications protocol mechanics.
+* **Interactive Visualizations**: Renders GitHub-flavored comparison tables and interactive **Mermaid sequence & architecture diagrams** with a click-to-zoom Lightbox modal.
+
+### 2. 🏗️ New Feature High-Level Design (HLD) Studio (Mode 2)
+* **3-Stage Divide-and-Conquer Multi-Agent Pipeline**:
+  1. **Stage 1 (Impact Scanner)**: Systematically scans and maps affected 3GPP specifications across Stage 1, Stage 2 Architecture, Stage 3 RAN/Core, Security, and OAM.
+  2. **Stage 2 (Interface & Parameter Extractor)**: Extracts concrete network interface changes (Uu, Xn, F1, E1, SBI), Information Elements (IEs), timers, and release progression.
+  3. **Stage 3 (Parallel Domain Specialists via `asyncio.gather`)**:
+     * **Sub-Agent A (Architecture & Signaling)**: Generates Executive Scope, System Architecture, and Mermaid Call Flow diagrams.
+     * **Sub-Agent B (Protocols & Interfaces)**: Generates Uu/Xn/F1/SBI parameter tables and Release Evolution Matrices (Rel-15 $\rightarrow$ Rel-19).
+     * **Sub-Agent C (Standards & Risks)**: Generates Impacted Spec Matrix tables, hardware/coexistence risks, and LLD Open Questions.
+  4. **Stage 4 (Master Document Assembly)**: Assembles the master HLD document ready for 1-click **Markdown Copy** or **`.md` File Download**.
+* **1-Click Study Presets**: Built-in templates for *Regenerative Satellite Payloads for NTN*, *On-Demand Network Energy Savings (NES)*, *Ambient IoT & Zero-Energy Devices*, and *URLLC Industrial Ethernet*.
+
+---
+
+## 🏛️ System Architecture
+
+```mermaid
+flowchart TD
+    User(["Network Engineer / Researcher"]) <--> Frontend["Vercel Frontend (Next.js 15 + Tailwind)"]
+    Frontend <-->|"SSE / REST API"| Backend["FastAPI Backend (Render)"]
+    
+    subgraph MultiAgentEngine["Multi-Agent Orchestration Layer"]
+        subgraph Mode1["Mode 1: Research & Gap Analysis"]
+            RA1["Researcher Agent"] --> RA2["Analyst-Synthesizer Agent"]
+        end
+        
+        subgraph Mode2["Mode 2: New Feature HLD Studio"]
+            S1["Stage 1: Impact Scanner"] --> S2["Stage 2: Interface Extractor"]
+            S2 --> S3["Stage 3: Parallel Domain Specialists (asyncio.gather)"]
+            subgraph S3Specialists["Parallel Sub-Agents"]
+                S3A["Sub-Agent A: Architecture & Mermaid Flows"]
+                S3B["Sub-Agent B: Protocols & Parameter Tables"]
+                S3C["Sub-Agent C: Spec Matrix & Design Risks"]
+            end
+            S3 --> S4["Stage 4: Master HLD Assembler"]
+        end
+    end
+    
+    Backend --> MultiAgentEngine
+    MultiAgentEngine <-->|"MCP Protocol (stdio/npx)"| MCP["3GPP MCP Server (TSpec-LLM / 3gpp-mcp-charging)"]
+    MultiAgentEngine <-->|"OpenAI-Compatible API"| LLM["Configurable LLM (Gemini 3.6-flash / Groq / OpenAI)"]
 ```
-Vercel AI Chatbot  →  FastAPI (Render)  →  Researcher + Analyst agents
-                                              ↓
-                                    Lightweight 3GPP MCP (stdio/npx)
-                                              ↓
-                                    Configurable LLM (Groq / OpenAI-compatible)
+
+---
+
+## 📁 Repository Structure
+
+```text
+├── app/
+│   ├── main.py                  # FastAPI entrypoint, SSE streaming, and health endpoints
+│   ├── llm.py                   # Multi-provider LLM client with auto-recovery and fallback
+│   ├── mcp_client.py            # MCP stdio client wrapper & OpenAI tool definitions
+│   ├── prompts.py               # Hybrid & HLD specialist system prompts
+│   ├── orchestrator.py          # Sequential and parallel sub-agent pipelines
+│   └── agents/
+│       ├── base.py              # Tool execution loop with native thought_signature preservation
+│       ├── researcher.py        # 3GPP specification research agent
+│       ├── analyst.py           # Technical gap analysis & synthesizer agent
+│       ├── hld_scanner.py       # Stage 1: Specification impact scanner
+│       ├── hld_extractor.py     # Stage 2: Interface & parameter extractor
+│       ├── hld_architect.py     # Stage 3: Monolithic HLD architect
+│       └── hld_specialists.py   # Stage 3: Parallel domain specialists (Arch, Proto, Risk)
+├── frontend/                    # Next.js 15 App Router Frontend
+│   ├── src/app/page.tsx         # Dual-mode UI (Research Q&A + HLD Studio)
+│   ├── src/components/
+│   │   └── Mermaid.tsx          # Client-side Mermaid SVG renderer with Zoom Lightbox Modal
+│   ├── package.json
+│   └── tailwind.config.ts
+├── Dockerfile                   # Multi-runtime Dockerfile (Python 3.11 + Node.js for MCP)
+├── .dockerignore
+└── requirements.txt             # Backend Python dependencies
 ```
 
-### Agents
+---
 
-| Agent | Role |
-|-------|------|
-| **Researcher** | Search & retrieve evidence via MCP tools |
-| **Analyst-Synthesizer** | Gap analysis, comparison, final cited report |
+## 🚀 Getting Started
 
-## Project layout
+### Prerequisites
+* **Python 3.11+**
+* **Node.js 18+** (required for `npx 3gpp-mcp-charging@latest`)
+* An API key for **Google Gemini**, **Groq**, or **OpenAI**
 
-```
-app/
-  main.py              # FastAPI endpoints
-  llm.py               # Configurable OpenAI-compatible client
-  mcp_client.py        # MCP stdio wrapper + tool schemas
-  prompts.py           # System prompts
-  orchestrator.py      # Researcher → Analyst pipeline
-  agents/
-    base.py            # Shared tool-calling loop
-    researcher.py
-    analyst.py
-```
+---
 
-## Local setup
+### Local Backend Setup
 
-```bash
-cd 3gpp-research-agent
-python -m venv .venv
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-cp .env.example .env
-# Edit .env with LLM_API_KEY and optional HUGGINGFACE_TOKEN
-```
+1. **Clone the repository**:
+   ```bash
+   git clone https://github.com/your-username/your-repo.git
+   cd your-repo
+   ```
 
-Requires Node.js (for `npx 3gpp-mcp-charging@latest serve`).
+2. **Set up Python Virtual Environment**:
+   ```bash
+   python3 -m venv .venv
+   source .venv/bin/activate   # Windows: .venv\Scripts\activate
+   pip install -r requirements.txt
+   ```
 
-### Run
+3. **Configure Environment Variables (`.env`)**:
+   ```env
+   # Google Gemini (Recommended - 1M+ context & high TPM)
+   LLM_API_KEY="your-gemini-api-key"
+   LLM_BASE_URL="https://generativelanguage.googleapis.com/v1beta/openai/"
+   LLM_MODEL="gemini-3.6-flash"
 
-```bash
-uvicorn app.main:app --reload --port 8000
-```
+   # Or Groq
+   # LLM_API_KEY="gsk_..."
+   # LLM_BASE_URL="https://api.groq.com/openai/v1"
+   # LLM_MODEL="openai/gpt-oss-120b"
 
-- Health: `GET http://localhost:8000/health`
-- Chat: `POST http://localhost:8000/chat`  
-  ```json
-  { "message": "What does TS 38.331 say about RRC connection establishment?", "include_evidence": true }
-  ```
-- Stream: `POST http://localhost:8000/chat/stream`
+   # Optional Hugging Face Token for MCP dataset embeddings
+   HUGGINGFACE_TOKEN=""
+   ```
 
-## Render deploy
+4. **Start the FastAPI Backend**:
+   ```bash
+   uvicorn app.main:app --reload --port 8000
+   ```
 
-1. New Web Service from this repo.
-2. Build: `pip install -r requirements.txt`
-3. Start: `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
-4. Set env vars from `.env.example` (especially `LLM_API_KEY`).
-5. Ensure the runtime has Node.js if using stdio MCP via `npx`.
+---
 
-## Next steps
+### Local Frontend Setup
 
-- Wire Vercel AI Chatbot to `/chat` or `/chat/stream`
-- Add token-level streaming from the LLM
-- Optional: MCP HTTP transport for a separate MCP service
-- Expand to Feature Impact prompts / third agent
+1. **Navigate to the frontend directory**:
+   ```bash
+   cd frontend
+   npm install
+   ```
+
+2. **Configure `.env.local`**:
+   ```env
+   NEXT_PUBLIC_BACKEND_URL=http://localhost:8000
+   ```
+
+3. **Start Next.js Dev Server**:
+   ```bash
+   npm run dev
+   ```
+   Open [http://localhost:3000](http://localhost:3000) in your browser.
+
+---
+
+## 🌐 API Reference
+
+| Method | Endpoint | Description |
+| :--- | :--- | :--- |
+| `GET` / `HEAD` | `/health` | Health check probe (Render uptime monitor compatible) |
+| `POST` | `/chat` | Non-streaming JSON endpoint for Standards Research & Q&A |
+| `POST` | `/chat/stream` | Server-Sent Events (SSE) stream with stage events (`status` $\rightarrow$ `evidence` $\rightarrow$ `answer` $\rightarrow$ `done`) |
+| `POST` | `/hld` | Non-streaming JSON endpoint for New Feature HLD generation |
+| `POST` | `/hld/stream` | SSE stream for 3-Stage HLD Pipeline (`scanner` $\rightarrow$ `extractor` $\rightarrow$ `architect` $\rightarrow$ `hld_document` $\rightarrow$ `done`) |
+
+---
+
+## ☁️ Production Deployment
+
+### 1. Backend on Render (Docker Web Service)
+1. Create a new **Web Service** on Render connected to your GitHub repository.
+2. Select **Docker** as the runtime (Render will automatically detect the root `Dockerfile`).
+3. Add Environment Variables:
+   * `LLM_API_KEY`: Your model API key
+   * `LLM_BASE_URL`: `https://generativelanguage.googleapis.com/v1beta/openai/`
+   * `LLM_MODEL`: `gemini-3.6-flash`
+   * `HUGGINGFACE_TOKEN`: *(Optional)*
+
+### 2. Frontend on Vercel
+1. Import your GitHub repository into **Vercel**.
+2. Set **Root Directory** to `frontend`.
+3. Add Environment Variable:
+   * `NEXT_PUBLIC_BACKEND_URL`: `https://your-render-backend.onrender.com`
+4. Deploy!
+
+---
+
+## 📄 License
+Apache-2.0 License.
