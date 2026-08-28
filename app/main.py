@@ -181,6 +181,7 @@ async def hld_stream(req: HLDRequest) -> StreamingResponse:
     """
 
     async def event_generator():
+        hld_completed = False
         try:
             from app.agents.hld_architect import HLDArchitectAgent
             from app.agents.hld_extractor import HLDInterfaceExtractorAgent
@@ -232,12 +233,16 @@ async def hld_stream(req: HLDRequest) -> StreamingResponse:
                     target_releases=req.target_releases,
                 )
                 yield _sse("hld_document", {"text": hld_document})
+                hld_completed = True
                 yield _sse("done", {})
-        except Exception as exc:  # noqa: BLE001
+        except (BaseExceptionGroup, Exception) as exc:  # noqa: BLE001
             import traceback
-            print(f"[Error in hld_stream]: {exc}")
+            print(f"[Notice in hld_stream]: {exc}")
             traceback.print_exc()
-            yield _sse("error", {"detail": str(exc)})
+            if not hld_completed:
+                yield _sse("error", {"detail": str(exc)})
+            else:
+                yield _sse("done", {})
 
     return StreamingResponse(
         event_generator(),

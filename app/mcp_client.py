@@ -225,7 +225,19 @@ async def mcp_session() -> AsyncIterator[MCPClient]:
         env=env,
     )
 
-    async with stdio_client(server_params) as (read, write):
-        async with ClientSession(read, write) as session:
-            await session.initialize()
-            yield MCPClient(session)
+    try:
+        async with stdio_client(server_params) as (read, write):
+            try:
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    yield MCPClient(session)
+            except (BaseExceptionGroup, Exception) as exc:
+                # Catch any session-level sub-exceptions on exit
+                err_str = str(exc).lower()
+                if not any(k in err_str for k in ("closed", "cancel", "broken pipe", "taskgroup", "endofstream")):
+                    raise
+    except (BaseExceptionGroup, Exception) as exc:
+        # Ignore normal process termination TaskGroup exit exceptions
+        err_str = str(exc).lower()
+        if not any(k in err_str for k in ("closed", "cancel", "broken pipe", "taskgroup", "endofstream")):
+            raise

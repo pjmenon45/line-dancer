@@ -304,13 +304,13 @@ export default function Home() {
           } else if (event === "done") {
             setHldCurrentStage(4);
           } else if (event === "error") {
-            setHldDocument(`❌ **HLD Generation Error:** ${data.detail || "An error occurred."}`);
+            setHldDocument((prev) => (prev && prev.length > 50 ? prev : `❌ **HLD Generation Error:** ${data.detail || "An error occurred."}`));
             setHldCurrentStage(4);
           }
         }
       }
     } catch (err: any) {
-      setHldDocument(`❌ **Connection Error:** ${err.message}`);
+      setHldDocument((prev) => (prev && prev.length > 50 ? prev : `❌ **Connection Error:** ${err.message}`));
       setHldCurrentStage(4);
     } finally {
       setHldLoading(false);
