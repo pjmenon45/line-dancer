@@ -220,17 +220,51 @@ async def hld_stream(req: HLDRequest) -> StreamingResponse:
                 if req.include_intermediates:
                     yield _sse("parameters_ledger", {"text": parameters_ledger})
 
-                # Stage 3: Architect
+                # Stage 3: Parallel Domain Sub-Agents
                 yield _sse(
                     "status",
-                    {"stage": "architect", "message": "Stage 3/3: Synthesizing master High-Level Design (HLD) document & architecture diagrams…"},
+                    {"stage": "architect", "message": "Stage 3/3: Running Parallel Architecture, Protocol & Risk Specialists…"},
                 )
-                hld_document = await architect.run(
+                from app.agents.hld_specialists import (
+                    HLDArchitectureSpecialist,
+                    HLDProtocolSpecialist,
+                    HLDRiskSpecialist,
+                    assemble_hld_document,
+                )
+                arch_spec = HLDArchitectureSpecialist()
+                proto_spec = HLDProtocolSpecialist()
+                risk_spec = HLDRiskSpecialist()
+
+                import asyncio
+                arch_res, proto_res, risk_res = await asyncio.gather(
+                    arch_spec.run(
+                        req.feature_name,
+                        impact_map,
+                        parameters_ledger,
+                        feature_description=req.feature_description,
+                        target_releases=req.target_releases,
+                    ),
+                    proto_spec.run(
+                        req.feature_name,
+                        impact_map,
+                        parameters_ledger,
+                        feature_description=req.feature_description,
+                        target_releases=req.target_releases,
+                    ),
+                    risk_spec.run(
+                        req.feature_name,
+                        impact_map,
+                        parameters_ledger,
+                        feature_description=req.feature_description,
+                        target_releases=req.target_releases,
+                    ),
+                )
+
+                hld_document = assemble_hld_document(
                     req.feature_name,
-                    impact_map,
-                    parameters_ledger,
-                    feature_description=req.feature_description,
-                    target_releases=req.target_releases,
+                    arch_section=arch_res,
+                    protocol_section=proto_res,
+                    risk_section=risk_res,
                 )
                 yield _sse("hld_document", {"text": hld_document})
                 hld_completed = True

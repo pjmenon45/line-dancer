@@ -756,7 +756,7 @@ export default function Home() {
                 }`}
               >
                 <div className="flex items-center justify-between text-xs mb-1">
-                  <span className="font-semibold text-slate-300">Stage 3: Lead Architect</span>
+                  <span className="font-semibold text-slate-300">Stage 3: Parallel Specialists</span>
                   {hldCurrentStage === 4 ? (
                     <CheckCircle2 className="w-4 h-4 text-emerald-400" />
                   ) : hldCurrentStage === 3 ? (
@@ -765,7 +765,7 @@ export default function Home() {
                     <span className="text-[10px] text-slate-500 font-mono">Pending</span>
                   )}
                 </div>
-                <p className="text-[11px] text-slate-400">Synthesizes master HLD with architecture diagrams & open questions.</p>
+                <p className="text-[11px] text-slate-400">Synthesizes Architecture, Protocols & Risk sections concurrently.</p>
               </div>
             </div>
 
