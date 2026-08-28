@@ -80,7 +80,7 @@ class HLDResponse(BaseModel):
     parameters_ledger: str | None = None
 
 
-@app.get("/")
+@app.api_route("/", methods=["GET", "HEAD"])
 async def root() -> dict[str, str]:
     return {
         "service": "3GPP Research & Gap Analysis + New Feature HLD Studio API",
@@ -90,7 +90,7 @@ async def root() -> dict[str, str]:
     }
 
 
-@app.get("/health")
+@app.api_route("/health", methods=["GET", "HEAD"])
 async def health() -> dict[str, str]:
     return {"status": "ok"}
 

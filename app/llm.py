@@ -1,4 +1,4 @@
-"""Configurable OpenAI-compatible LLM client with automatic 413/TPM fallback."""
+"""Configurable OpenAI-compatible LLM client with multi-provider fallback (Google Gemini, Groq, OpenAI)."""
 
 from __future__ import annotations
 
@@ -11,23 +11,41 @@ from openai import AsyncOpenAI
 
 def get_llm_client() -> AsyncOpenAI:
     api_key = os.getenv("LLM_API_KEY", "")
-    base_url = os.getenv("LLM_BASE_URL", "https://api.groq.com/openai/v1")
+    base_url = os.getenv("LLM_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai/")
     if not api_key:
         raise RuntimeError("LLM_API_KEY is not set")
     return AsyncOpenAI(api_key=api_key, base_url=base_url)
 
 
 def get_model_name() -> str:
+    # Default to gemini-2.0-flash if using Google, or gpt-oss-120b if using Groq
+    base_url = os.getenv("LLM_BASE_URL", "").lower()
+    if "googleapis" in base_url or "google" in base_url:
+        return os.getenv("LLM_MODEL", "gemini-2.0-flash")
     return os.getenv("LLM_MODEL", "openai/gpt-oss-120b")
 
 
 def _get_candidate_models() -> list[str]:
     primary = get_model_name()
     candidates = [primary]
-    # High TPM / 128k context fallback models on Groq
-    for fallback in ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]:
-        if fallback not in candidates:
-            candidates.append(fallback)
+    base_url = os.getenv("LLM_BASE_URL", "").lower()
+
+    if "googleapis" in base_url or "google" in base_url:
+        # Google Gemini candidate fallbacks
+        for fallback in ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"]:
+            if fallback not in candidates:
+                candidates.append(fallback)
+    elif "groq" in base_url:
+        # Groq candidate fallbacks
+        for fallback in ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]:
+            if fallback not in candidates:
+                candidates.append(fallback)
+    elif "openai.com" in base_url:
+        # OpenAI candidate fallbacks
+        for fallback in ["gpt-4o-mini", "gpt-4o"]:
+            if fallback not in candidates:
+                candidates.append(fallback)
+
     return candidates
 
 
@@ -80,7 +98,7 @@ async def chat_completion(
                 await asyncio.sleep(1)
                 continue
             elif "400" in err_str and tools:
-                # If tool schema validation error on a specific model, try without optional tools
+                # If tool schema validation error on a specific model, retry with sanitized message payload
                 print("  [LLM Recovery] Retrying with sanitized message payload...")
                 await asyncio.sleep(0.5)
                 continue
