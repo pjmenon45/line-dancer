@@ -43,24 +43,29 @@ async def run_tool_loop(
             print(f"  [Round {round_idx}] LLM finished research without further tool calls.")
             return message.content or ""
 
-        # Append the assistant message that requested tools
-        messages.append(
-            {
-                "role": "assistant",
-                "content": message.content or "",
-                "tool_calls": [
-                    {
-                        "id": tc.id,
-                        "type": "function",
-                        "function": {
-                            "name": tc.function.name,
-                            "arguments": tc.function.arguments,
-                        },
-                    }
-                    for tc in message.tool_calls
-                ],
-            }
-        )
+        # Append the assistant message that requested tools (preserving vendor thought_signatures)
+        if hasattr(message, "model_dump"):
+            messages.append(message.model_dump(exclude_none=True))
+        elif isinstance(message, dict):
+            messages.append(message)
+        else:
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": message.content or "",
+                    "tool_calls": [
+                        {
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {
+                                "name": tc.function.name,
+                                "arguments": tc.function.arguments,
+                            },
+                        }
+                        for tc in (getattr(message, "tool_calls", None) or [])
+                    ],
+                }
+            )
 
         # Execute each tool call
         for tc in message.tool_calls:
