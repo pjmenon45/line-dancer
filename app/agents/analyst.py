@@ -26,14 +26,12 @@ class AnalystAgent:
         max_rounds is kept low (default 3): evidence is already gathered;
         extra tool calls are only for filling clear gaps.
         """
-        series = series or _default_series()
-        releases = releases or _default_releases()
-
+        series_note = f"series {series} and " if series else "any relevant series and "
         user_message = (
             f"Original user question:\n{question}\n\n"
             f"Evidence from the Researcher:\n{evidence}\n\n"
-            f"Constraints:\n"
-            f"- Prefer series {series} and releases {releases} when making further tool calls.\n"
+            f"Instructions:\n"
+            f"- Prefer {series_note}releases {releases} when making further tool calls.\n"
             f"- If the evidence is sufficient, do NOT call tools — write the final answer immediately.\n"
             f"- Only call tools if a critical fact is missing from the evidence.\n"
             f"- Produce the final answer in the mandatory format."

@@ -24,12 +24,12 @@ load_dotenv()
 from app.agents.analyst import AnalystAgent  # noqa: E402
 from app.agents.researcher import ResearcherAgent  # noqa: E402
 from app.mcp_client import mcp_session  # noqa: E402
-from app.orchestrator import run_research_gap_analysis  # noqa: E402
+from app.orchestrator import run_new_feature_hld, run_research_gap_analysis  # noqa: E402
 
 app = FastAPI(
-    title="3GPP Research & Gap Analysis",
-    version="0.1.0",
-    description="2-agent Standards Research & Gap Analysis over the lightweight 3GPP MCP",
+    title="3GPP Research & Gap Analysis + New Feature HLD Studio",
+    version="0.2.0",
+    description="Multi-agent 3GPP Standards Research & High-Level Design (HLD) Engine",
 )
 
 app.add_middleware(
@@ -59,10 +59,31 @@ class ChatResponse(BaseModel):
     evidence: str | None = None
 
 
+class HLDRequest(BaseModel):
+    feature_name: str = Field(
+        ..., min_length=1, description="Target feature or study item (e.g. Regenerative Satellite Payloads for NTN)"
+    )
+    feature_description: str = Field(
+        default="", description="Additional requirements, architectural constraints, or scope notes"
+    )
+    target_releases: list[str] | None = Field(
+        default=None, description="Target releases, e.g. ['Rel-17', 'Rel-18', 'Rel-19']"
+    )
+    include_intermediates: bool = Field(
+        default=True, description="If true, return Stage 1 impact map and Stage 2 parameters ledger"
+    )
+
+
+class HLDResponse(BaseModel):
+    hld_document: str
+    impact_map: str | None = None
+    parameters_ledger: str | None = None
+
+
 @app.get("/")
 async def root() -> dict[str, str]:
     return {
-        "service": "3GPP Research & Gap Analysis API",
+        "service": "3GPP Research & Gap Analysis + New Feature HLD Studio API",
         "status": "running",
         "docs": "/docs",
         "health": "/health",
@@ -133,5 +154,102 @@ async def chat_stream(req: ChatRequest) -> StreamingResponse:
     )
 
 
+@app.post("/hld", response_model=HLDResponse)
+async def hld_generate(req: HLDRequest) -> HLDResponse:
+    """Run the 3-stage New Feature HLD pipeline (Scanner → Extractor → Architect)."""
+    try:
+        result = await run_new_feature_hld(
+            feature_name=req.feature_name,
+            feature_description=req.feature_description,
+            target_releases=req.target_releases,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    return HLDResponse(
+        hld_document=result["hld_document"],
+        impact_map=result["impact_map"] if req.include_intermediates else None,
+        parameters_ledger=result["parameters_ledger"] if req.include_intermediates else None,
+    )
+
+
+@app.post("/hld/stream")
+async def hld_stream(req: HLDRequest) -> StreamingResponse:
+    """
+    SSE stream for the 3-stage New Feature HLD workflow:
+      status(scanner) → impact_map → status(extractor) → parameters_ledger → status(architect) → hld_document → done
+    """
+
+    async def event_generator():
+        try:
+            from app.agents.hld_architect import HLDArchitectAgent
+            from app.agents.hld_extractor import HLDInterfaceExtractorAgent
+            from app.agents.hld_scanner import HLDImpactScannerAgent
+            from app.mcp_client import mcp_session
+
+            async with mcp_session() as client:
+                scanner = HLDImpactScannerAgent(client)
+                extractor = HLDInterfaceExtractorAgent(client)
+                architect = HLDArchitectAgent(client)
+
+                # Stage 1: Scanner
+                yield _sse(
+                    "status",
+                    {"stage": "scanner", "message": "Stage 1/3: Scanning impacted 3GPP specifications across Core, RAN, Security & Management…"},
+                )
+                impact_map = await scanner.run(
+                    req.feature_name,
+                    feature_description=req.feature_description,
+                    target_releases=req.target_releases,
+                )
+                if req.include_intermediates:
+                    yield _sse("impact_map", {"text": impact_map})
+
+                # Stage 2: Extractor
+                yield _sse(
+                    "status",
+                    {"stage": "extractor", "message": "Stage 2/3: Extracting interfaces (Uu, Xn, F1, SBI), parameters, IEs, and release deltas…"},
+                )
+                parameters_ledger = await extractor.run(
+                    req.feature_name,
+                    impact_map,
+                    feature_description=req.feature_description,
+                    target_releases=req.target_releases,
+                )
+                if req.include_intermediates:
+                    yield _sse("parameters_ledger", {"text": parameters_ledger})
+
+                # Stage 3: Architect
+                yield _sse(
+                    "status",
+                    {"stage": "architect", "message": "Stage 3/3: Synthesizing master High-Level Design (HLD) document & architecture diagrams…"},
+                )
+                hld_document = await architect.run(
+                    req.feature_name,
+                    impact_map,
+                    parameters_ledger,
+                    feature_description=req.feature_description,
+                    target_releases=req.target_releases,
+                )
+                yield _sse("hld_document", {"text": hld_document})
+                yield _sse("done", {})
+        except Exception as exc:  # noqa: BLE001
+            import traceback
+            print(f"[Error in hld_stream]: {exc}")
+            traceback.print_exc()
+            yield _sse("error", {"detail": str(exc)})
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 def _sse(event: str, data: dict[str, Any]) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+

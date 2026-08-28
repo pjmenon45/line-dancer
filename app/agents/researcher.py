@@ -21,14 +21,17 @@ class ResearcherAgent:
         series: list[str] | None = None,
         releases: list[str] | None = None,
     ) -> str:
-        series = series or _default_series()
-        releases = releases or _default_releases()
+        series_constraint = (
+            f"- Prefer series_filter={series}\n"
+            if series
+            else "- Search across any relevant 3GPP series (TS 23, TS 24, TS 29, TS 32, TS 33, TS 36, TS 38)\n"
+        )
 
         user_message = (
             f"User question:\n{question}\n\n"
-            f"Constraints for this run:\n"
-            f"- Prefer series_filter={series}\n"
-            f"- Prefer release_filter={releases}\n"
+            f"Context for this run:\n"
+            f"{series_constraint}"
+            f"- Releases: {releases}\n"
             f"- Gather structured evidence only; do not write the final user-facing report."
         )
 

@@ -29,13 +29,15 @@ TOOL_NAMES = [
 ]
 
 
-def _default_series() -> list[str]:
-    raw = os.getenv("DEFAULT_SERIES", "38")
+def _default_series() -> list[str] | None:
+    raw = os.getenv("DEFAULT_SERIES", "")
+    if not raw.strip():
+        return None
     return [s.strip() for s in raw.split(",") if s.strip()]
 
 
 def _default_releases() -> list[str]:
-    raw = os.getenv("DEFAULT_RELEASES", "Rel-16,Rel-17,Rel-18,Rel-19")
+    raw = os.getenv("DEFAULT_RELEASES", "Rel-15,Rel-16,Rel-17,Rel-18,Rel-19")
     return [r.strip() for r in raw.split(",") if r.strip()]
 
 
@@ -50,16 +52,18 @@ def openai_tool_schemas() -> list[dict[str, Any]]:
             "function": {
                 "name": "search_specifications",
                 "description": (
-                    "Search 3GPP specifications using TSpec-LLM. "
-                    "Returns structured content and metadata. "
-                    "Prefer series_filter=['38'] for NR work."
+                    "Search 3GPP specifications across all supported series: "
+                    "TS 23 (System Architecture/Core/NWDAF), TS 24 (NAS/Protocols), "
+                    "TS 29 (SBI/APIs), TS 32 (Charging/Management), TS 33 (Security/5G-AKA), "
+                    "TS 36 (LTE/NB-IoT), and TS 38 (5G NR RAN). "
+                    "Returns structured content and metadata."
                 ),
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "query": {
                             "type": "string",
-                            "description": "Search query, e.g. 'RRC connection establishment' or 'RedCap'",
+                            "description": "Search query, e.g. '5G charging CHF', 'NWDAF analytics', 'RRC setup', or 'authentication 5G-AKA'",
                         },
                         "max_results": {
                             "type": "number",
@@ -68,12 +72,12 @@ def openai_tool_schemas() -> list[dict[str, Any]]:
                         "series_filter": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "Series numbers, e.g. ['38']",
+                            "description": "Optional series filter, e.g. ['23'], ['32'], ['33'], ['38']. Omit to search all series.",
                         },
                         "release_filter": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "Releases, e.g. ['Rel-16','Rel-17']",
+                            "description": "Releases, e.g. ['Rel-16','Rel-17','Rel-18']",
                         },
                     },
                     "required": ["query"],
