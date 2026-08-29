@@ -133,6 +133,7 @@ export default function Home() {
   const [openImpact, setOpenImpact] = useState(false);
   const [openLedger, setOpenLedger] = useState(false);
   const [copiedHld, setCopiedHld] = useState(false);
+  const [showPresetsMobile, setShowPresetsMobile] = useState(false);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -337,7 +338,7 @@ export default function Home() {
   };
 
   return (
-    <div className="flex flex-col h-screen bg-slate-950 text-slate-100 selection:bg-indigo-500 selection:text-white">
+    <div className="flex flex-col h-[100dvh] min-h-[100dvh] bg-slate-950 text-slate-100 selection:bg-indigo-500 selection:text-white">
       {/* Main Top Header with Mode Tabs */}
       <header className="px-4 md:px-6 py-3 border-b border-slate-800/80 flex flex-col md:flex-row md:items-center justify-between gap-3 bg-slate-950/90 backdrop-blur sticky top-0 z-30">
         <div className="flex items-center space-x-3">
@@ -582,9 +583,9 @@ export default function Home() {
       {/* MODE 2: NEW FEATURE HLD AGENT (3-STAGE ENGINEERING WORKFLOW) */}
       {/* ========================================================================= */}
       {activeTab === "hld" && (
-        <div className="flex-1 flex flex-col md:flex-row min-h-0 overflow-hidden">
+        <div className="flex-1 flex flex-col md:flex-row min-h-0 overflow-y-auto md:overflow-hidden">
           {/* Left Panel: Feature Specification & Scope Controls */}
-          <aside className="w-full md:w-[380px] lg:w-[420px] border-r border-slate-800/80 bg-slate-950/60 p-4 md:p-6 overflow-y-auto space-y-6 shrink-0">
+          <aside className="w-full md:w-[380px] lg:w-[420px] border-b md:border-b-0 md:border-r border-slate-800/80 bg-slate-950/60 p-4 md:p-6 overflow-y-visible md:overflow-y-auto space-y-5 md:space-y-6 shrink-0">
             <div>
               <h2 className="text-base font-bold text-slate-100 flex items-center gap-2">
                 <Layers className="w-4 h-4 text-indigo-400" />
@@ -597,14 +598,26 @@ export default function Home() {
 
             {/* Built-in Presets */}
             <div className="space-y-2">
-              <label className="text-xs font-semibold text-slate-300 uppercase tracking-wider">
-                1-Click Study Presets
-              </label>
-              <div className="grid grid-cols-1 gap-2">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-semibold text-slate-300 uppercase tracking-wider">
+                  1-Click Study Presets
+                </label>
+                <button
+                  type="button"
+                  onClick={() => setShowPresetsMobile(!showPresetsMobile)}
+                  className="md:hidden text-[11px] text-indigo-400 font-medium hover:text-indigo-300 transition py-0.5 px-2 rounded-lg bg-indigo-950/40 border border-indigo-500/30"
+                >
+                  {showPresetsMobile ? "Hide Presets" : "Show Presets"}
+                </button>
+              </div>
+              <div className={`${showPresetsMobile ? "grid" : "hidden md:grid"} grid-cols-1 gap-2`}>
                 {HLD_PRESETS.map((preset, idx) => (
                   <button
                     key={idx}
-                    onClick={() => applyPreset(preset)}
+                    onClick={() => {
+                      applyPreset(preset);
+                      setShowPresetsMobile(false);
+                    }}
                     className="text-left p-2.5 rounded-xl bg-slate-900/80 hover:bg-slate-850 border border-slate-800 hover:border-indigo-500/50 transition group"
                   >
                     <div className="text-xs font-semibold text-indigo-300 group-hover:text-indigo-200 flex items-center justify-between">
@@ -675,24 +688,26 @@ export default function Home() {
               </div>
             </div>
 
-            {/* Launch Button */}
-            <button
-              onClick={handleGenerateHLD}
-              disabled={hldLoading || !hldFeature.trim()}
-              className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white py-3 rounded-xl font-semibold text-xs flex items-center justify-center gap-2 transition shadow-lg shadow-indigo-950/60"
-            >
-              {hldLoading ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  <span>Synthesizing HLD Pipeline…</span>
-                </>
-              ) : (
-                <>
-                  <Play className="w-4 h-4" />
-                  <span>Generate New Feature HLD</span>
-                </>
-              )}
-            </button>
+            {/* Sticky Launch Button on Mobile */}
+            <div className="sticky bottom-0 z-20 bg-slate-950/95 backdrop-blur py-2.5 md:static md:bg-transparent md:p-0">
+              <button
+                onClick={handleGenerateHLD}
+                disabled={hldLoading || !hldFeature.trim()}
+                className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white py-3 rounded-xl font-semibold text-xs flex items-center justify-center gap-2 transition shadow-lg shadow-indigo-950/60"
+              >
+                {hldLoading ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>Synthesizing HLD Pipeline…</span>
+                  </>
+                ) : (
+                  <>
+                    <Play className="w-4 h-4" />
+                    <span>Generate New Feature HLD</span>
+                  </>
+                )}
+              </button>
+            </div>
           </aside>
 
           {/* Right Panel: Live 3-Stage Progress & Master HLD Deliverable */}

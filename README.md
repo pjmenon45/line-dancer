@@ -187,3 +187,19 @@ flowchart TD
 
 ## 📄 License
 Apache-2.0 License.
+
+## 📄 Acknowledgments
+Research Foundation
+This project's V3.0.0 architecture was fundamentally inspired by the TSpec-LLM research:
+
+TSpec-LLM: A Large Language Model for 3GPP Specifications
+
+Paper: https://arxiv.org/abs/2406.01768
+Authors: Rasoul Nikbakht, et al.
+Dataset: TSpec-LLM on Hugging Face
+
+Technical Foundation
+Built using the Model Context Protocol SDK
+Integrates with TSpec-LLM dataset
+Supports 3GPP specifications from 3GPP.org
+V3.0.0: True MCP architecture providing direct specification access through external API integration.
