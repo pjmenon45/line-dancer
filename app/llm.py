@@ -21,7 +21,7 @@ def get_model_name() -> str:
     base_url = os.getenv("LLM_BASE_URL", "").lower()
     if "googleapis" in base_url or "google" in base_url:
         return os.getenv("LLM_MODEL", "gemini-3.6-flash")
-    return os.getenv("LLM_MODEL", "openai/gpt-oss-120b")
+    return os.getenv("LLM_MODEL", "llama-3.3-70b-versatile")
 
 
 def _get_candidate_models() -> list[str]:
@@ -95,8 +95,9 @@ async def chat_completion(
                 print(f"  [LLM Recovery] Model {model_name} not available, switching to next candidate model...")
                 await asyncio.sleep(0.5)
                 continue
-            elif "413" in err_str or "rate_limit" in err_str or "tokens per minute" in err_str or "too large" in err_str:
-                print(f"  [LLM Recovery] Switching from {model_name} to higher-TPM fallback model...")
+            # If rate limited (413, 429, quota limit, or TPM limit), try fallback model or trim content
+            elif any(k in err_str for k in ("413", "429", "rate_limit", "quota", "resource_exhausted", "tokens per minute", "too large")):
+                print(f"  [LLM Recovery] Rate/quota limit on {model_name}, switching to next candidate model...")
                 current_messages = _trim_messages(current_messages, max_chars=8000)
                 await asyncio.sleep(1)
                 continue
