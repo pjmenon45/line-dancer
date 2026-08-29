@@ -108,8 +108,8 @@ async def chat(req: ChatRequest) -> ChatResponse:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     return ChatResponse(
-        answer=result["answer"],
-        evidence=result["evidence"] if req.include_evidence else None,
+        answer=result.get("answer", "") if isinstance(result, dict) else "",
+        evidence=result.get("evidence") if (isinstance(result, dict) and req.include_evidence) else None,
     )
 
 
@@ -126,16 +126,17 @@ async def chat_stream(req: ChatRequest) -> StreamingResponse:
             {"stage": "researcher", "message": "Gathering evidence from 3GPP specifications…"},
         )
         try:
-            result = await run_research_gap_analysis(
+            raw_result = await run_research_gap_analysis(
                 req.message,
                 series=req.series,
                 releases=req.releases,
             )
+            result = raw_result or {}
             if req.include_evidence and result.get("evidence"):
                 yield _sse("evidence", {"text": result["evidence"]})
 
             yield _sse("status", {"stage": "analyst", "message": "Synthesizing technical report…"})
-            yield _sse("answer", {"text": result["answer"]})
+            yield _sse("answer", {"text": result.get("answer", "")})
             yield _sse("done", {})
         except Exception as exc:  # noqa: BLE001
             import traceback
