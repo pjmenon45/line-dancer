@@ -19,7 +19,7 @@ _lock = asyncio.Lock()
 # Verified High-Throughput / High-TPD Production Models for Groq
 DEFAULT_GROQ_MODELS = [
     "llama-3.3-70b-versatile",
-    "llama-3.1-70b-versatile",
+    "llama-3.3-70b-specdec",
 ]
 
 DEFAULT_GOOGLE_MODELS = [
@@ -32,7 +32,7 @@ DEFAULT_OPENAI_MODELS = [
     "gpt-4o",
 ]
 
-# Patterns to strictly exclude (audio, moderation, low-TPD experimental previews with 200k daily caps)
+# Patterns to strictly exclude (audio, moderation, decommissioned, low-TPD experimental previews)
 EXCLUDED_MODEL_PATTERNS = (
     "whisper",
     "guard",
@@ -44,9 +44,10 @@ EXCLUDED_MODEL_PATTERNS = (
     "rerank",
     "vision-preview",
     "qwen3.8",
-    "gpt-oss",       # Excluded: 200k TPD cap
+    "gpt-oss",
     "gpt-oss-120b",
     "gpt-oss-20b",
+    "llama-3.1-70b",   # Decommissioned by Groq
 )
 
 
@@ -206,8 +207,8 @@ async def chat_completion(
             err_str = str(exc).lower()
             print(f"  [LLM Warning] Call to {model_name} failed: {exc}")
 
-            # 1. Deprecated / Not Found (404) -> Permanently remove from pool and continue
-            if "404" in err_str or "not_found" in err_str or "model_not_found" in err_str or "does not exist" in err_str:
+            # 1. Deprecated / Decommissioned / Not Found (404 / 400 model_decommissioned) -> Permanently purge from pool
+            if any(k in err_str for k in ("404", "not_found", "model_not_found", "does not exist", "decommissioned", "model_decommissioned", "no longer supported")):
                 _remove_deprecated_model(model_name)
                 await asyncio.sleep(0.2)
                 continue
