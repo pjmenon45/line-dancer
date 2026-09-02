@@ -1,12 +1,50 @@
-"""Configurable OpenAI-compatible LLM client with verified provider models and auto-recovery."""
+"""Round-Robin LLM Client with Auto-Discovery, Weekly Deprecation Cleanup & Dynamic Failover."""
 
 from __future__ import annotations
 
 import asyncio
 import os
+import time
 from typing import Any
 
 from openai import AsyncOpenAI
+
+# In-memory Model Pool & Round-Robin State
+_model_pool: list[str] = []
+_last_pool_refresh: float = 0.0
+_model_cooldowns: dict[str, float] = {}  # model_name -> cooldown_until_timestamp
+_rr_index: int = 0
+_lock = asyncio.Lock()
+
+# Verified Default Models (Fallback if /models API is unavailable)
+DEFAULT_GROQ_MODELS = [
+    "llama-3.3-70b-versatile",
+    "openai/gpt-oss-120b",
+    "openai/gpt-oss-20b",
+]
+
+DEFAULT_GOOGLE_MODELS = [
+    "gemini-2.5-flash",
+    "gemini-2.5-pro",
+]
+
+DEFAULT_OPENAI_MODELS = [
+    "gpt-4o-mini",
+    "gpt-4o",
+]
+
+# Patterns to exclude from auto-discovery (audio, embedding, moderation, non-chat)
+EXCLUDED_MODEL_PATTERNS = (
+    "whisper",
+    "guard",
+    "distil",
+    "embed",
+    "moderation",
+    "tts",
+    "dall-e",
+    "rerank",
+    "vision-preview",
+)
 
 
 def get_llm_client() -> AsyncOpenAI:
@@ -17,33 +55,89 @@ def get_llm_client() -> AsyncOpenAI:
     return AsyncOpenAI(api_key=api_key, base_url=base_url)
 
 
-def get_model_name() -> str:
-    base_url = os.getenv("LLM_BASE_URL", "").lower()
-    if "googleapis" in base_url or "google" in base_url:
-        return os.getenv("LLM_MODEL", "gemini-2.5-flash")
-    return os.getenv("LLM_MODEL", "llama-3.3-70b-versatile")
+def _get_default_models_for_provider(base_url: str) -> list[str]:
+    url = base_url.lower()
+    if "googleapis" in url or "google" in url:
+        return list(DEFAULT_GOOGLE_MODELS)
+    if "openai.com" in url:
+        return list(DEFAULT_OPENAI_MODELS)
+    return list(DEFAULT_GROQ_MODELS)
 
 
-def _get_candidate_models() -> list[str]:
-    primary = get_model_name()
-    candidates = [primary]
-    base_url = os.getenv("LLM_BASE_URL", "").lower()
+async def refresh_active_model_pool(force: bool = False) -> list[str]:
+    """
+    Periodically (weekly / 7 days) queries the provider's /models API to:
+      1. Discover newly released open-source models.
+      2. Clean up deprecated or removed models.
+    """
+    global _model_pool, _last_pool_refresh
+    now = time.time()
+    seven_days = 7 * 86400  # 604,800 seconds
 
-    if "googleapis" in base_url or "google" in base_url:
-        for fallback in ["gemini-2.5-flash", "gemini-2.5-pro"]:
-            if fallback not in candidates:
-                candidates.append(fallback)
-    elif "groq" in base_url:
-        # Verified active models on Groq
-        for fallback in ["llama-3.3-70b-versatile", "openai/gpt-oss-120b", "openai/gpt-oss-20b"]:
-            if fallback not in candidates:
-                candidates.append(fallback)
-    elif "openai.com" in base_url:
-        for fallback in ["gpt-4o-mini", "gpt-4o"]:
-            if fallback not in candidates:
-                candidates.append(fallback)
+    # Refresh only if empty, forced, or older than 7 days
+    if not force and _model_pool and (now - _last_pool_refresh) < seven_days:
+        return _model_pool
 
-    return candidates
+    client = get_llm_client()
+    base_url = os.getenv("LLM_BASE_URL", "https://api.groq.com/openai/v1")
+    primary_override = os.getenv("LLM_MODEL", "").strip()
+
+    discovered: list[str] = []
+    try:
+        print("  [Model Discovery] Querying provider API for active open-source models...")
+        response = await client.models.list()
+        for m in response.data:
+            model_id = getattr(m, "id", "")
+            if not model_id:
+                continue
+
+            # Check if model should be excluded
+            model_id_lower = model_id.lower()
+            if any(pat in model_id_lower for pat in EXCLUDED_MODEL_PATTERNS):
+                continue
+
+            # Prioritize suitable chat / reasoning models
+            if "groq" in base_url.lower():
+                if any(k in model_id_lower for k in ("llama", "qwen", "gpt-oss", "deepseek", "mixtral", "gemma")):
+                    discovered.append(model_id)
+            elif "googleapis" in base_url.lower():
+                if "gemini" in model_id_lower:
+                    discovered.append(model_id)
+            else:
+                discovered.append(model_id)
+
+        print(f"  [Model Discovery] Found {len(discovered)} active models from provider.")
+    except Exception as exc:
+        print(f"  [Model Discovery Notice] Could not fetch live models: {exc}. Using verified defaults.")
+        discovered = _get_default_models_for_provider(base_url)
+
+    if not discovered:
+        discovered = _get_default_models_for_provider(base_url)
+
+    # Ensure user's explicitly configured LLM_MODEL is always first if specified
+    if primary_override and primary_override in discovered:
+        discovered.remove(primary_override)
+        discovered.insert(0, primary_override)
+    elif primary_override:
+        discovered.insert(0, primary_override)
+
+    _model_pool = discovered
+    _last_pool_refresh = now
+    return _model_pool
+
+
+def _remove_deprecated_model(model_name: str) -> None:
+    """Instantly purge a deprecated model returned with 404 from the active pool."""
+    global _model_pool
+    if model_name in _model_pool:
+        print(f"  [Cleanup] Removing deprecated/unavailable model '{model_name}' from round-robin pool.")
+        _model_pool = [m for m in _model_pool if m != model_name]
+
+
+def _set_model_cooldown(model_name: str, duration_seconds: int = 600) -> None:
+    """Place a rate-limited or quota-exhausted model in cooldown (default: 10 mins)."""
+    _model_cooldowns[model_name] = time.time() + duration_seconds
+    print(f"  [Cooldown] Model '{model_name}' placed on cooldown for {duration_seconds // 60} minutes.")
 
 
 def _trim_messages(messages: list[dict[str, Any]], max_chars: int = 8000) -> list[dict[str, Any]]:
@@ -62,13 +156,38 @@ async def chat_completion(
     tools: list[dict[str, Any]] | None = None,
     tool_choice: str | dict | None = "auto",
 ) -> Any:
-    """Chat completion call with verified models and automatic TPM rate limit recovery."""
+    """
+    Round-Robin Chat Completion:
+      - Distributes token requests evenly across open-source models.
+      - Automatically bypasses rate-limited (429) or deprecated (404) models.
+      - Periodic weekly model discovery keeps the pool up to date.
+    """
+    global _rr_index
     client = get_llm_client()
-    candidate_models = _get_candidate_models()
-    current_messages = messages
+    pool = await refresh_active_model_pool()
 
+    if not pool:
+        pool = _get_default_models_for_provider(os.getenv("LLM_BASE_URL", ""))
+
+    now = time.time()
+    # Filter out models currently in cooldown
+    active_candidates = [m for m in pool if _model_cooldowns.get(m, 0.0) <= now]
+    if not active_candidates:
+        # If all in cooldown, reset cooldowns and retry all
+        _model_cooldowns.clear()
+        active_candidates = list(pool)
+
+    # Determine starting index in the round-robin ring
+    async with _lock:
+        start_idx = _rr_index % len(active_candidates)
+        _rr_index = (_rr_index + 1) % len(active_candidates)
+
+    # Create round-robin ordered sequence for this request
+    ordered_models = active_candidates[start_idx:] + active_candidates[:start_idx]
+    current_messages = messages
     last_exc = None
-    for model_name in candidate_models:
+
+    for model_name in ordered_models:
         kwargs: dict[str, Any] = {
             "model": model_name,
             "messages": current_messages,
@@ -78,27 +197,31 @@ async def chat_completion(
             if tool_choice is not None:
                 kwargs["tool_choice"] = tool_choice
 
-        print(f"  [LLM] Calling model: {model_name} (message count: {len(current_messages)})...")
+        print(f"  [Round-Robin LLM] Calling model: {model_name} (candidate ring size: {len(ordered_models)})...")
         try:
             response = await client.chat.completions.create(**kwargs)
-            print(f"  [LLM] Response successfully received from {model_name}.")
+            print(f"  [Round-Robin LLM] Response successfully received from {model_name}.")
             return response.choices[0].message
         except Exception as exc:
             last_exc = exc
             err_str = str(exc).lower()
             print(f"  [LLM Warning] Call to {model_name} failed: {exc}")
 
-            # If model deprecated/not found (404), skip directly to next model
+            # 1. Deprecated / Not Found (404) -> Permanently remove from pool and continue
             if "404" in err_str or "not_found" in err_str or "model_not_found" in err_str or "does not exist" in err_str:
-                print(f"  [LLM Recovery] Model {model_name} not available, switching to next verified model...")
-                await asyncio.sleep(0.3)
+                _remove_deprecated_model(model_name)
+                await asyncio.sleep(0.2)
                 continue
-            # If rate limited (413, 429, quota limit, or TPM limit), trim payload and try next candidate
-            elif any(k in err_str for k in ("413", "429", "rate_limit", "quota", "resource_exhausted", "tokens per minute", "too large")):
-                print(f"  [LLM Recovery] Rate/quota limit on {model_name}, trimming payload and switching model...")
+
+            # 2. Rate Limit / Quota Exhaustion (429 / 413 / TPD) -> Cooldown & advance round-robin
+            elif any(k in err_str for k in ("413", "429", "rate_limit", "quota", "resource_exhausted", "tokens per day", "tokens per minute", "too large")):
+                print(f"  [LLM Failover] Quota/rate limit on {model_name}. Failing over to next model in ring...")
+                _set_model_cooldown(model_name, duration_seconds=600)
                 current_messages = _trim_messages(current_messages, max_chars=6000)
-                await asyncio.sleep(1)
+                await asyncio.sleep(0.5)
                 continue
+
+            # 3. Tool schema error on a specific model -> Retry with sanitized messages
             elif "400" in err_str and tools:
                 print("  [LLM Recovery] Retrying with sanitized message payload...")
                 await asyncio.sleep(0.5)
@@ -108,4 +231,4 @@ async def chat_completion(
 
     if last_exc:
         raise last_exc
-    raise RuntimeError("All LLM candidate models failed.")
+    raise RuntimeError("All models in the round-robin pool failed.")
