@@ -16,7 +16,7 @@ _model_cooldowns: dict[str, float] = {}  # model_name -> cooldown_until_timestam
 _rr_index: int = 0
 _lock = asyncio.Lock()
 
-# Verified Default Models (Fallback if /models API is unavailable)
+# Verified High-TPM Models for Groq (Prioritizes 30,000 TPM Llama 3.3)
 DEFAULT_GROQ_MODELS = [
     "llama-3.3-70b-versatile",
     "openai/gpt-oss-120b",
@@ -33,7 +33,7 @@ DEFAULT_OPENAI_MODELS = [
     "gpt-4o",
 ]
 
-# Patterns to exclude from auto-discovery (audio, embedding, moderation, non-chat)
+# Patterns to exclude from auto-discovery (audio, embedding, low-tpm previews, non-chat)
 EXCLUDED_MODEL_PATTERNS = (
     "whisper",
     "guard",
@@ -44,6 +44,7 @@ EXCLUDED_MODEL_PATTERNS = (
     "dall-e",
     "rerank",
     "vision-preview",
+    "qwen3.8",
 )
 
 
@@ -96,7 +97,8 @@ async def refresh_active_model_pool(force: bool = False) -> list[str]:
                 continue
 
             if "groq" in base_url.lower():
-                if any(k in model_id_lower for k in ("llama", "qwen", "gpt-oss", "deepseek", "mixtral", "gemma")):
+                # On Groq, focus on high-TPM Llama, GPT-OSS, and production models
+                if any(k in model_id_lower for k in ("llama-3.3", "llama-3.1", "gpt-oss", "deepseek")):
                     live_models.append(model_id)
             elif "googleapis" in base_url.lower():
                 if "gemini" in model_id_lower:
@@ -135,13 +137,13 @@ def _set_model_cooldown(model_name: str, duration_seconds: int = 600) -> None:
     print(f"  [Cooldown] Model '{model_name}' placed on cooldown for {duration_seconds // 60} minutes.")
 
 
-def _trim_messages(messages: list[dict[str, Any]], max_chars: int = 8000) -> list[dict[str, Any]]:
-    """Trim oversized tool/user messages to stay safely within TPM limits."""
+def _trim_messages(messages: list[dict[str, Any]], max_chars: int = 3500) -> list[dict[str, Any]]:
+    """Trim oversized tool/user messages to stay safely within strict TPM limits."""
     trimmed = []
     for msg in messages:
         content = msg.get("content", "")
         if isinstance(content, str) and len(content) > max_chars:
-            content = content[:max_chars] + "\n...[truncated for token limit]..."
+            content = content[:max_chars] + "\n...[compacted for provider token limit]..."
         trimmed.append({**msg, "content": content})
     return trimmed
 
@@ -179,7 +181,7 @@ async def chat_completion(
 
     # Create round-robin ordered sequence for this request
     ordered_models = active_candidates[start_idx:] + active_candidates[:start_idx]
-    current_messages = messages
+    current_messages = _trim_messages(messages, max_chars=4000)
     last_exc = None
 
     for model_name in ordered_models:
@@ -210,9 +212,9 @@ async def chat_completion(
 
             # 2. Rate Limit / Quota Exhaustion (429 / 413 / TPD) -> Cooldown & advance round-robin
             elif any(k in err_str for k in ("413", "429", "rate_limit", "quota", "resource_exhausted", "tokens per day", "tokens per minute", "too large")):
-                print(f"  [LLM Failover] Quota/rate limit on {model_name}. Failing over to next model in ring...")
+                print(f"  [LLM Failover] Quota/rate limit on {model_name}. Trimming payload and failing over to next model...")
                 _set_model_cooldown(model_name, duration_seconds=600)
-                current_messages = _trim_messages(current_messages, max_chars=6000)
+                current_messages = _trim_messages(current_messages, max_chars=2500)
                 await asyncio.sleep(0.5)
                 continue
 
