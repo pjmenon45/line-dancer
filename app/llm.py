@@ -1,4 +1,4 @@
-"""Round-Robin LLM Client with Auto-Discovery, Deprecation Cleanup & Daily Quota Safeguards."""
+"""Clean, dynamic LLM client with active:true auto-discovery, 1-hr TTL cache, and failover."""
 
 from __future__ import annotations
 
@@ -9,14 +9,27 @@ from typing import Any
 
 from openai import AsyncOpenAI
 
-# In-memory Model Pool & Round-Robin State
-_model_pool: list[str] = []
-_last_pool_refresh: float = 0.0
-_model_cooldowns: dict[str, float] = {}  # model_name -> cooldown_until_timestamp
-_rr_index: int = 0
-_lock = asyncio.Lock()
+# In-memory Model Cache (1-hour TTL)
+_model_cache: dict[str, Any] = {"models": [], "fetched_at": 0.0}
+_CACHE_TTL_SECONDS = 3600  # Re-check what's active once an hour
 
-# Verified High-Throughput / High-TPD Production Models for Groq
+# In-memory cooldowns (model_name -> cooldown_until_timestamp)
+_cooldowns: dict[str, float] = {}
+
+# Patterns to exclude from chat completions (audio, moderation, embedding, low-quota previews)
+_NON_CHAT_HINTS = (
+    "whisper",
+    "tts",
+    "guard",
+    "moderation",
+    "embed",
+    "vision-preview",
+    "rerank",
+    "distil",
+    "gpt-oss",  # 200k daily TPD preview limit
+)
+
+# Verified fallback models if /models API call fails
 DEFAULT_GROQ_MODELS = [
     "llama-3.3-70b-versatile",
     "llama-3.3-70b-specdec",
@@ -31,24 +44,6 @@ DEFAULT_OPENAI_MODELS = [
     "gpt-4o-mini",
     "gpt-4o",
 ]
-
-# Patterns to strictly exclude (audio, moderation, decommissioned, low-TPD experimental previews)
-EXCLUDED_MODEL_PATTERNS = (
-    "whisper",
-    "guard",
-    "distil",
-    "embed",
-    "moderation",
-    "tts",
-    "dall-e",
-    "rerank",
-    "vision-preview",
-    "qwen3.8",
-    "gpt-oss",
-    "gpt-oss-120b",
-    "gpt-oss-20b",
-    "llama-3.1-70b",   # Decommissioned by Groq
-)
 
 
 def get_llm_client() -> AsyncOpenAI:
@@ -68,76 +63,46 @@ def _get_default_models_for_provider(base_url: str) -> list[str]:
     return list(DEFAULT_GROQ_MODELS)
 
 
-async def refresh_active_model_pool(force: bool = False) -> list[str]:
-    """
-    Returns active production models, attempting dynamic discovery every 7 days while safely falling back to defaults.
-    """
-    global _model_pool, _last_pool_refresh
+async def get_active_models(client: AsyncOpenAI) -> list[str]:
+    """Ask provider for active: true models instead of hardcoding, cached for 1 hour."""
     now = time.time()
-    seven_days = 7 * 86400  # 604,800 seconds
-
-    # Return cached pool if valid
-    if not force and _model_pool and (now - _last_pool_refresh) < seven_days:
-        return _model_pool
+    if _model_cache["models"] and (now - _model_cache["fetched_at"] < _CACHE_TTL_SECONDS):
+        return _model_cache["models"]
 
     base_url = os.getenv("LLM_BASE_URL", "https://api.groq.com/openai/v1")
     primary_override = os.getenv("LLM_MODEL", "").strip()
-
-    # Start with rock-solid verified production defaults
-    discovered = _get_default_models_for_provider(base_url)
+    active_models: list[str] = []
 
     try:
-        client = get_llm_client()
-        response = await client.models.list()
-        live_models: list[str] = []
-        for m in response.data:
-            model_id = getattr(m, "id", "")
-            if not model_id:
-                continue
-
-            model_id_lower = model_id.lower()
-            if any(pat in model_id_lower for pat in EXCLUDED_MODEL_PATTERNS):
-                continue
-
-            if "groq" in base_url.lower():
-                # On Groq, strictly include high-TPD Meta Llama and DeepSeek models
-                if any(k in model_id_lower for k in ("llama-3.3", "llama-3.1", "deepseek")):
-                    live_models.append(model_id)
-            elif "googleapis" in base_url.lower():
-                if "gemini" in model_id_lower:
-                    live_models.append(model_id)
-            else:
-                live_models.append(model_id)
-
-        if live_models:
-            discovered = live_models
+        resp = await client.models.list()
+        active_models = [
+            m.id
+            for m in resp.data
+            if getattr(m, "active", True)
+            and not any(h in m.id.lower() for h in _NON_CHAT_HINTS)
+        ]
     except Exception:
-        # If /models API is denied or offline, use verified defaults with 0 delay
-        pass
+        active_models = _get_default_models_for_provider(base_url)
 
-    # Ensure user's explicitly configured LLM_MODEL is prioritized if valid and not excluded
-    if primary_override and not any(pat in primary_override.lower() for pat in EXCLUDED_MODEL_PATTERNS):
-        if primary_override in discovered:
-            discovered.remove(primary_override)
-        discovered.insert(0, primary_override)
+    if not active_models:
+        active_models = _get_default_models_for_provider(base_url)
 
-    _model_pool = discovered
-    _last_pool_refresh = now
-    return _model_pool
+    # Prioritize user's configured LLM_MODEL if specified
+    if primary_override and primary_override in active_models:
+        active_models.remove(primary_override)
+        active_models.insert(0, primary_override)
+    elif primary_override and not any(h in primary_override.lower() for h in _NON_CHAT_HINTS):
+        active_models.insert(0, primary_override)
 
-
-def _remove_deprecated_model(model_name: str) -> None:
-    """Instantly purge a deprecated or excluded model from the active pool."""
-    global _model_pool
-    if model_name in _model_pool:
-        print(f"  [Cleanup] Removing model '{model_name}' from round-robin pool.")
-        _model_pool = [m for m in _model_pool if m != model_name]
+    _model_cache["models"] = active_models
+    _model_cache["fetched_at"] = now
+    return active_models
 
 
-def _set_model_cooldown(model_name: str, duration_seconds: int = 600) -> None:
-    """Place a rate-limited or quota-exhausted model in cooldown."""
-    _model_cooldowns[model_name] = time.time() + duration_seconds
-    print(f"  [Cooldown] Model '{model_name}' placed on cooldown for {duration_seconds // 60} minutes.")
+def _available(models: list[str]) -> list[str]:
+    """Filter out models currently on cooldown."""
+    now = time.time()
+    return [m for m in models if _cooldowns.get(m, 0.0) <= now]
 
 
 def _trim_messages(messages: list[dict[str, Any]], max_chars: int = 3500) -> list[dict[str, Any]]:
@@ -157,37 +122,23 @@ async def chat_completion(
     tool_choice: str | dict | None = "auto",
 ) -> Any:
     """
-    Round-Robin Chat Completion:
-      - Distributes token requests evenly across verified high-TPD open-source models.
-      - Automatically bypasses rate-limited (429) or deprecated (404) models.
-      - Daily quota exhaustion triggers a 24-hour cooldown so exhausted models are never retried today.
+    Executes a chat completion across active provider models with dynamic failover:
+      - Uses active: true models from Groq /models API.
+      - Automatically skips decommissioned (404/400) and rate-limited (429/413) models.
     """
-    global _rr_index
     client = get_llm_client()
-    pool = await refresh_active_model_pool()
+    models = await get_active_models(client)
+    candidates = _available(models)
 
-    if not pool:
-        pool = _get_default_models_for_provider(os.getenv("LLM_BASE_URL", ""))
+    if not candidates:
+        # If all candidates are on cooldown, reset cooldowns and retry all
+        _cooldowns.clear()
+        candidates = list(models)
 
-    now = time.time()
-    # Filter out models currently in cooldown
-    active_candidates = [m for m in pool if _model_cooldowns.get(m, 0.0) <= now]
-    if not active_candidates:
-        # If all in cooldown, reset short-term cooldowns and retry pool
-        _model_cooldowns.clear()
-        active_candidates = list(pool)
-
-    # Determine starting index in the round-robin ring
-    async with _lock:
-        start_idx = _rr_index % len(active_candidates)
-        _rr_index = (_rr_index + 1) % len(active_candidates)
-
-    # Create round-robin ordered sequence for this request
-    ordered_models = active_candidates[start_idx:] + active_candidates[:start_idx]
     current_messages = _trim_messages(messages, max_chars=4000)
-    last_exc = None
+    last_exc: Exception | None = None
 
-    for model_name in ordered_models:
+    for model_name in candidates:
         kwargs: dict[str, Any] = {
             "model": model_name,
             "messages": current_messages,
@@ -197,46 +148,44 @@ async def chat_completion(
             if tool_choice is not None:
                 kwargs["tool_choice"] = tool_choice
 
-        print(f"  [Round-Robin LLM] Calling model: {model_name} (candidate ring size: {len(ordered_models)})...")
+        print(f"  [LLM] Calling active model: {model_name} (candidates: {len(candidates)})...")
         try:
             response = await client.chat.completions.create(**kwargs)
-            print(f"  [Round-Robin LLM] Response successfully received from {model_name}.")
+            print(f"  [LLM] Response successfully received from {model_name}.")
             return response.choices[0].message
         except Exception as exc:
             last_exc = exc
-            err_str = str(exc).lower()
+            err = str(exc).lower()
             print(f"  [LLM Warning] Call to {model_name} failed: {exc}")
 
-            # 1. Deprecated / Decommissioned / Not Found (404 / 400 model_decommissioned) -> Permanently purge from pool
-            if any(k in err_str for k in ("404", "not_found", "model_not_found", "does not exist", "decommissioned", "model_decommissioned", "no longer supported")):
-                _remove_deprecated_model(model_name)
+            # 1. Decommissioned / Not Found -> Cooldown for 1 hour until next /models refresh
+            if any(k in err for k in ("404", "decommissioned", "not_found", "does not exist", "no longer supported")):
+                _cooldowns[model_name] = time.time() + _CACHE_TTL_SECONDS
                 await asyncio.sleep(0.2)
                 continue
 
-            # 2. Daily Token Quota Exhausted (TPD / 429) -> Place on 24-hour cooldown and failover immediately
-            elif "tokens per day" in err_str or "tpd" in err_str or "day" in err_str and "limit" in err_str:
-                print(f"  [LLM Failover] Model {model_name} exhausted its 24-hour daily quota (TPD). Placing on 24h cooldown...")
-                _set_model_cooldown(model_name, duration_seconds=86400)
+            # 2. Daily Token Quota (TPD) -> 24-hour cooldown
+            elif "tokens per day" in err or "tpd" in err:
+                _cooldowns[model_name] = time.time() + 86400
                 current_messages = _trim_messages(current_messages, max_chars=2500)
                 await asyncio.sleep(0.3)
                 continue
 
-            # 3. Minute Rate Limit / TPM Spike (413 / 429 TPM) -> 10-minute cooldown & trim payload
-            elif any(k in err_str for k in ("413", "429", "rate_limit", "quota", "resource_exhausted", "tokens per minute", "too large")):
-                print(f"  [LLM Failover] Rate/TPM limit on {model_name}. Trimming payload and failing over...")
-                _set_model_cooldown(model_name, duration_seconds=600)
+            # 3. Rate Limit / TPM Spike (429 / 413) -> 60s cooldown & trim payload
+            elif any(k in err for k in ("429", "413", "rate_limit", "quota", "too large", "tokens per minute")):
+                _cooldowns[model_name] = time.time() + 60
                 current_messages = _trim_messages(current_messages, max_chars=2500)
                 await asyncio.sleep(0.5)
                 continue
 
-            # 4. Tool schema error on a specific model -> Retry with sanitized messages
-            elif "400" in err_str and tools:
-                print("  [LLM Recovery] Retrying with sanitized message payload...")
+            # 4. Tool schema format error -> Retry with sanitized messages
+            elif "400" in err and tools:
+                _cooldowns[model_name] = time.time() + 30
                 await asyncio.sleep(0.5)
                 continue
             else:
-                raise
+                _cooldowns[model_name] = time.time() + 30
+                await asyncio.sleep(0.2)
+                continue
 
-    if last_exc:
-        raise last_exc
-    raise RuntimeError("All models in the round-robin pool failed.")
+    raise RuntimeError(f"All {len(candidates)} candidates failed. Last error: {last_exc}")
