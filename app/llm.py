@@ -1,4 +1,4 @@
-"""Round-Robin LLM Client with Auto-Discovery, Weekly Deprecation Cleanup & Dynamic Failover."""
+"""Round-Robin LLM Client with Auto-Discovery, Deprecation Cleanup & Daily Quota Safeguards."""
 
 from __future__ import annotations
 
@@ -16,11 +16,10 @@ _model_cooldowns: dict[str, float] = {}  # model_name -> cooldown_until_timestam
 _rr_index: int = 0
 _lock = asyncio.Lock()
 
-# Verified High-TPM Models for Groq (Prioritizes 30,000 TPM Llama 3.3)
+# Verified High-Throughput / High-TPD Production Models for Groq
 DEFAULT_GROQ_MODELS = [
     "llama-3.3-70b-versatile",
-    "openai/gpt-oss-120b",
-    "openai/gpt-oss-20b",
+    "llama-3.1-70b-versatile",
 ]
 
 DEFAULT_GOOGLE_MODELS = [
@@ -33,7 +32,7 @@ DEFAULT_OPENAI_MODELS = [
     "gpt-4o",
 ]
 
-# Patterns to exclude from auto-discovery (audio, embedding, low-tpm previews, non-chat)
+# Patterns to strictly exclude (audio, moderation, low-TPD experimental previews with 200k daily caps)
 EXCLUDED_MODEL_PATTERNS = (
     "whisper",
     "guard",
@@ -45,6 +44,9 @@ EXCLUDED_MODEL_PATTERNS = (
     "rerank",
     "vision-preview",
     "qwen3.8",
+    "gpt-oss",       # Excluded: 200k TPD cap
+    "gpt-oss-120b",
+    "gpt-oss-20b",
 )
 
 
@@ -67,7 +69,7 @@ def _get_default_models_for_provider(base_url: str) -> list[str]:
 
 async def refresh_active_model_pool(force: bool = False) -> list[str]:
     """
-    Returns active models, attempting dynamic discovery every 7 days while safely falling back to defaults.
+    Returns active production models, attempting dynamic discovery every 7 days while safely falling back to defaults.
     """
     global _model_pool, _last_pool_refresh
     now = time.time()
@@ -80,7 +82,7 @@ async def refresh_active_model_pool(force: bool = False) -> list[str]:
     base_url = os.getenv("LLM_BASE_URL", "https://api.groq.com/openai/v1")
     primary_override = os.getenv("LLM_MODEL", "").strip()
 
-    # Start with rock-solid verified defaults
+    # Start with rock-solid verified production defaults
     discovered = _get_default_models_for_provider(base_url)
 
     try:
@@ -97,8 +99,8 @@ async def refresh_active_model_pool(force: bool = False) -> list[str]:
                 continue
 
             if "groq" in base_url.lower():
-                # On Groq, focus on high-TPM Llama, GPT-OSS, and production models
-                if any(k in model_id_lower for k in ("llama-3.3", "llama-3.1", "gpt-oss", "deepseek")):
+                # On Groq, strictly include high-TPD Meta Llama and DeepSeek models
+                if any(k in model_id_lower for k in ("llama-3.3", "llama-3.1", "deepseek")):
                     live_models.append(model_id)
             elif "googleapis" in base_url.lower():
                 if "gemini" in model_id_lower:
@@ -112,10 +114,10 @@ async def refresh_active_model_pool(force: bool = False) -> list[str]:
         # If /models API is denied or offline, use verified defaults with 0 delay
         pass
 
-    if primary_override and primary_override in discovered:
-        discovered.remove(primary_override)
-        discovered.insert(0, primary_override)
-    elif primary_override:
+    # Ensure user's explicitly configured LLM_MODEL is prioritized if valid and not excluded
+    if primary_override and not any(pat in primary_override.lower() for pat in EXCLUDED_MODEL_PATTERNS):
+        if primary_override in discovered:
+            discovered.remove(primary_override)
         discovered.insert(0, primary_override)
 
     _model_pool = discovered
@@ -124,15 +126,15 @@ async def refresh_active_model_pool(force: bool = False) -> list[str]:
 
 
 def _remove_deprecated_model(model_name: str) -> None:
-    """Instantly purge a deprecated model returned with 404 from the active pool."""
+    """Instantly purge a deprecated or excluded model from the active pool."""
     global _model_pool
     if model_name in _model_pool:
-        print(f"  [Cleanup] Removing deprecated/unavailable model '{model_name}' from round-robin pool.")
+        print(f"  [Cleanup] Removing model '{model_name}' from round-robin pool.")
         _model_pool = [m for m in _model_pool if m != model_name]
 
 
 def _set_model_cooldown(model_name: str, duration_seconds: int = 600) -> None:
-    """Place a rate-limited or quota-exhausted model in cooldown (default: 10 mins)."""
+    """Place a rate-limited or quota-exhausted model in cooldown."""
     _model_cooldowns[model_name] = time.time() + duration_seconds
     print(f"  [Cooldown] Model '{model_name}' placed on cooldown for {duration_seconds // 60} minutes.")
 
@@ -155,9 +157,9 @@ async def chat_completion(
 ) -> Any:
     """
     Round-Robin Chat Completion:
-      - Distributes token requests evenly across open-source models.
+      - Distributes token requests evenly across verified high-TPD open-source models.
       - Automatically bypasses rate-limited (429) or deprecated (404) models.
-      - Periodic weekly model discovery keeps the pool up to date.
+      - Daily quota exhaustion triggers a 24-hour cooldown so exhausted models are never retried today.
     """
     global _rr_index
     client = get_llm_client()
@@ -170,7 +172,7 @@ async def chat_completion(
     # Filter out models currently in cooldown
     active_candidates = [m for m in pool if _model_cooldowns.get(m, 0.0) <= now]
     if not active_candidates:
-        # If all in cooldown, reset cooldowns and retry all
+        # If all in cooldown, reset short-term cooldowns and retry pool
         _model_cooldowns.clear()
         active_candidates = list(pool)
 
@@ -210,15 +212,23 @@ async def chat_completion(
                 await asyncio.sleep(0.2)
                 continue
 
-            # 2. Rate Limit / Quota Exhaustion (429 / 413 / TPD) -> Cooldown & advance round-robin
-            elif any(k in err_str for k in ("413", "429", "rate_limit", "quota", "resource_exhausted", "tokens per day", "tokens per minute", "too large")):
-                print(f"  [LLM Failover] Quota/rate limit on {model_name}. Trimming payload and failing over to next model...")
+            # 2. Daily Token Quota Exhausted (TPD / 429) -> Place on 24-hour cooldown and failover immediately
+            elif "tokens per day" in err_str or "tpd" in err_str or "day" in err_str and "limit" in err_str:
+                print(f"  [LLM Failover] Model {model_name} exhausted its 24-hour daily quota (TPD). Placing on 24h cooldown...")
+                _set_model_cooldown(model_name, duration_seconds=86400)
+                current_messages = _trim_messages(current_messages, max_chars=2500)
+                await asyncio.sleep(0.3)
+                continue
+
+            # 3. Minute Rate Limit / TPM Spike (413 / 429 TPM) -> 10-minute cooldown & trim payload
+            elif any(k in err_str for k in ("413", "429", "rate_limit", "quota", "resource_exhausted", "tokens per minute", "too large")):
+                print(f"  [LLM Failover] Rate/TPM limit on {model_name}. Trimming payload and failing over...")
                 _set_model_cooldown(model_name, duration_seconds=600)
                 current_messages = _trim_messages(current_messages, max_chars=2500)
                 await asyncio.sleep(0.5)
                 continue
 
-            # 3. Tool schema error on a specific model -> Retry with sanitized messages
+            # 4. Tool schema error on a specific model -> Retry with sanitized messages
             elif "400" in err_str and tools:
                 print("  [LLM Recovery] Retrying with sanitized message payload...")
                 await asyncio.sleep(0.5)
