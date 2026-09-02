@@ -66,55 +66,50 @@ def _get_default_models_for_provider(base_url: str) -> list[str]:
 
 async def refresh_active_model_pool(force: bool = False) -> list[str]:
     """
-    Periodically (weekly / 7 days) queries the provider's /models API to:
-      1. Discover newly released open-source models.
-      2. Clean up deprecated or removed models.
+    Returns active models, attempting dynamic discovery every 7 days while safely falling back to defaults.
     """
     global _model_pool, _last_pool_refresh
     now = time.time()
     seven_days = 7 * 86400  # 604,800 seconds
 
-    # Refresh only if empty, forced, or older than 7 days
+    # Return cached pool if valid
     if not force and _model_pool and (now - _last_pool_refresh) < seven_days:
         return _model_pool
 
-    client = get_llm_client()
     base_url = os.getenv("LLM_BASE_URL", "https://api.groq.com/openai/v1")
     primary_override = os.getenv("LLM_MODEL", "").strip()
 
-    discovered: list[str] = []
+    # Start with rock-solid verified defaults
+    discovered = _get_default_models_for_provider(base_url)
+
     try:
-        print("  [Model Discovery] Querying provider API for active open-source models...")
+        client = get_llm_client()
         response = await client.models.list()
+        live_models: list[str] = []
         for m in response.data:
             model_id = getattr(m, "id", "")
             if not model_id:
                 continue
 
-            # Check if model should be excluded
             model_id_lower = model_id.lower()
             if any(pat in model_id_lower for pat in EXCLUDED_MODEL_PATTERNS):
                 continue
 
-            # Prioritize suitable chat / reasoning models
             if "groq" in base_url.lower():
                 if any(k in model_id_lower for k in ("llama", "qwen", "gpt-oss", "deepseek", "mixtral", "gemma")):
-                    discovered.append(model_id)
+                    live_models.append(model_id)
             elif "googleapis" in base_url.lower():
                 if "gemini" in model_id_lower:
-                    discovered.append(model_id)
+                    live_models.append(model_id)
             else:
-                discovered.append(model_id)
+                live_models.append(model_id)
 
-        print(f"  [Model Discovery] Found {len(discovered)} active models from provider.")
-    except Exception as exc:
-        print(f"  [Model Discovery Notice] Could not fetch live models: {exc}. Using verified defaults.")
-        discovered = _get_default_models_for_provider(base_url)
+        if live_models:
+            discovered = live_models
+    except Exception:
+        # If /models API is denied or offline, use verified defaults with 0 delay
+        pass
 
-    if not discovered:
-        discovered = _get_default_models_for_provider(base_url)
-
-    # Ensure user's explicitly configured LLM_MODEL is always first if specified
     if primary_override and primary_override in discovered:
         discovered.remove(primary_override)
         discovered.insert(0, primary_override)
