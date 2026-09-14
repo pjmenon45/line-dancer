@@ -1,9 +1,9 @@
-"""Multi-Provider Stacking LLM Client (Groq, Cerebras, Google Gemini, OpenRouter).
+"""Multi-Provider Stacking LLM Client with Live Provider /models Auto-Discovery.
 
-Aggregates free tiers across multiple independent AI clouds behind one unified interface:
-- Auto-detects providers from environment variables and key prefix signatures.
-- Round-robin load balancing across cloud providers to distribute token consumption.
-- Instant, zero-downtime failover across providers on 429 (rate/daily limit), 404, or 400.
+Aggregates free tiers across multiple independent AI clouds:
+- Dynamically queries each provider's GET /models endpoint to discover currently active models.
+- Never relies on hardcoded or stale model names.
+- Round-robin load balancing and instant failover across clouds on rate limits (429/TPD/TPM).
 """
 
 from __future__ import annotations
@@ -11,15 +11,33 @@ from __future__ import annotations
 import asyncio
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from openai import AsyncOpenAI
 
 # In-memory Cooldowns (key: f"{provider}:{model}" -> timestamp)
 _cooldowns: dict[str, float] = {}
+# In-memory model cache per provider: {provider_name: {"models": [...], "fetched_at": float}}
+_provider_model_cache: dict[str, dict[str, Any]] = {}
+_CACHE_TTL_SECONDS = 1800  # Refresh live active models every 30 minutes
+
 _rr_provider_idx: int = 0
 _lock = asyncio.Lock()
+
+# Non-chat models to exclude from discovery
+_NON_CHAT_HINTS = (
+    "whisper",
+    "tts",
+    "guard",
+    "moderation",
+    "embed",
+    "vision-preview",
+    "rerank",
+    "dall-e",
+    "distil-whisper",
+    "prompt-guard",
+)
 
 
 @dataclass
@@ -27,15 +45,11 @@ class ProviderConfig:
     name: str
     base_url: str
     api_key: str
-    models: list[str]
+    fallback_models: list[str] = field(default_factory=list)
 
 
 def _get_configured_providers() -> list[ProviderConfig]:
-    """
-    Inspect environment variables and key prefixes to detect all active providers.
-    Supports GROQ_API_KEY, CEREBRAS_API_KEY, GEMINI_API_KEY, OPENROUTER_API_KEY,
-    as well as prefix auto-detection on LLM_API_KEY / generic variables.
-    """
+    """Inspect environment variables and key prefixes to detect active providers."""
     providers: list[ProviderConfig] = []
     seen_keys: set[str] = set()
 
@@ -53,7 +67,12 @@ def _get_configured_providers() -> list[ProviderConfig]:
                 name="Groq",
                 base_url="https://api.groq.com/openai/v1",
                 api_key=groq_key,
-                models=["llama-3.3-70b-versatile", "llama-3.3-70b-specdec"],
+                fallback_models=[
+                    "llama-3.3-70b-versatile",
+                    "deepseek-r1-distill-llama-70b",
+                    "qwen-2.5-32b",
+                    "gemma2-9b-it",
+                ],
             )
         )
 
@@ -71,7 +90,7 @@ def _get_configured_providers() -> list[ProviderConfig]:
                 name="Cerebras",
                 base_url="https://api.cerebras.ai/v1",
                 api_key=cerebras_key,
-                models=["llama-3.3-70b", "llama3.3-70b", "llama-3.1-8b", "llama3.1-8b"],
+                fallback_models=["llama3.3-70b", "llama3.1-70b", "llama3.1-8b", "llama-3.3-70b"],
             )
         )
 
@@ -89,7 +108,13 @@ def _get_configured_providers() -> list[ProviderConfig]:
                 name="Google-Gemini",
                 base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
                 api_key=gemini_key,
-                models=["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"],
+                fallback_models=[
+                    "gemini-2.5-flash",
+                    "gemini-3.6-flash",
+                    "gemini-2.5-pro",
+                    "gemini-1.5-flash-latest",
+                    "gemini-1.5-pro-latest",
+                ],
             )
         )
 
@@ -107,10 +132,10 @@ def _get_configured_providers() -> list[ProviderConfig]:
                 name="OpenRouter",
                 base_url="https://openrouter.ai/api/v1",
                 api_key=openrouter_key,
-                models=[
+                fallback_models=[
                     "meta-llama/llama-3.3-70b-instruct:free",
                     "google/gemini-2.0-flash-exp:free",
-                    "mistralai/mistral-small-24b-instruct-2501:free",
+                    "google/gemini-2.5-flash:free",
                 ],
             )
         )
@@ -125,7 +150,7 @@ def _get_configured_providers() -> list[ProviderConfig]:
                 name="Custom-Gateway",
                 base_url=legacy_base or "https://api.groq.com/openai/v1",
                 api_key=legacy_key,
-                models=[legacy_model],
+                fallback_models=[legacy_model],
             )
         )
 
@@ -135,6 +160,50 @@ def _get_configured_providers() -> list[ProviderConfig]:
 def get_llm_client(base_url: str, api_key: str) -> AsyncOpenAI:
     """Create an AsyncOpenAI client targeting a specific provider base_url."""
     return AsyncOpenAI(api_key=api_key, base_url=base_url)
+
+
+async def get_live_provider_models(provider: ProviderConfig) -> list[str]:
+    """
+    Asks the provider's /models API for currently active models in real time.
+    Falls back gracefully to verified defaults if /models endpoint is restricted.
+    """
+    now = time.time()
+    cached = _provider_model_cache.get(provider.name)
+    if cached and (now - cached.get("fetched_at", 0.0) < _CACHE_TTL_SECONDS) and cached.get("models"):
+        return cached["models"]
+
+    client = get_llm_client(provider.base_url, provider.api_key)
+    discovered: list[str] = []
+
+    try:
+        resp = await client.models.list()
+        for m in resp.data:
+            model_id = getattr(m, "id", "")
+            if not model_id:
+                continue
+
+            model_id_lower = model_id.lower()
+            # Exclude audio, moderation, embedding models
+            if any(h in model_id_lower for h in _NON_CHAT_HINTS):
+                continue
+
+            # On OpenRouter, strictly filter for currently active :free endpoints
+            if "openrouter" in provider.base_url.lower():
+                if not model_id.endswith(":free"):
+                    continue
+
+            # Filter active: true if supported
+            if getattr(m, "active", True):
+                discovered.append(model_id)
+
+    except Exception as exc:
+        print(f"  [Model Discovery Notice] {provider.name} /models check: {exc}. Using fallback models.")
+
+    if not discovered:
+        discovered = list(provider.fallback_models)
+
+    _provider_model_cache[provider.name] = {"models": discovered, "fetched_at": now}
+    return discovered
 
 
 def _set_cooldown(provider: str, model: str, duration_seconds: int = 60) -> None:
@@ -168,6 +237,7 @@ async def chat_completion(
 ) -> Any:
     """
     Multi-Provider Stacking Chat Completion:
+      - Live auto-discovery of currently active models from each provider.
       - Rotates requests across active providers (Groq, Cerebras, Gemini, OpenRouter).
       - Seamlessly fails over to next provider if 429 (rate/daily limit), 404, or 400 occurs.
     """
@@ -185,15 +255,15 @@ async def chat_completion(
         start_idx = _rr_provider_idx % len(providers)
         _rr_provider_idx = (_rr_provider_idx + 1) % len(providers)
 
-    # Correct circular slicing through ALL configured providers
     ordered_providers = providers[start_idx:] + providers[:start_idx]
     current_messages = _trim_messages(messages, max_chars=4000)
     provider_errors: list[str] = []
 
     for provider in ordered_providers:
         client = get_llm_client(provider.base_url, provider.api_key)
+        models = await get_live_provider_models(provider)
 
-        for model_name in provider.models:
+        for model_name in models:
             if _is_cooling_down(provider.name, model_name):
                 continue
 
