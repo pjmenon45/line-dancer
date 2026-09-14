@@ -56,7 +56,7 @@ def _get_configured_providers() -> list[ProviderConfig]:
                 name="Cerebras",
                 base_url="https://api.cerebras.ai/v1",
                 api_key=cerebras_key,
-                models=["llama-3.3-70b", "llama3.3-70b", "llama3.1-8b"],
+                models=["llama3.3-70b", "llama3.1-70b", "llama3.1-8b"],
             )
         )
 
@@ -74,7 +74,7 @@ def _get_configured_providers() -> list[ProviderConfig]:
             )
         )
 
-    # 4. OpenRouter (Verified Free Tier models)
+    # 4. OpenRouter (Verified 100% Free Tier endpoints)
     openrouter_key = os.getenv("OPENROUTER_API_KEY")
     if openrouter_key:
         providers.append(
@@ -86,7 +86,6 @@ def _get_configured_providers() -> list[ProviderConfig]:
                     "meta-llama/llama-3.3-70b-instruct:free",
                     "google/gemini-2.0-flash-exp:free",
                     "deepseek/deepseek-r1:free",
-                    "qwen/qwen-2.5-coder-32b-instruct:free",
                 ],
             )
         )
