@@ -3,7 +3,7 @@
 Aggregates free tiers across multiple independent AI clouds behind one unified interface:
 - Auto-discovers configured providers from environment variables.
 - Round-robin load balancing across cloud providers to distribute token consumption.
-- Instant, zero-downtime failover across providers on 429 (rate/daily limit) or 404.
+- Instant, zero-downtime failover across providers on 429 (rate/daily limit), 404, or 400.
 """
 
 from __future__ import annotations
@@ -56,11 +56,11 @@ def _get_configured_providers() -> list[ProviderConfig]:
                 name="Cerebras",
                 base_url="https://api.cerebras.ai/v1",
                 api_key=cerebras_key,
-                models=["llama3.3-70b", "llama3.1-8b"],
+                models=["llama-3.3-70b", "llama3.3-70b", "llama3.1-8b"],
             )
         )
 
-    # 3. Google Gemini (1M+ context window, high token headroom)
+    # 3. Google Gemini (2.0 Flash / 1.5 Flash with 1M+ context window)
     gemini_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or (
         os.getenv("LLM_API_KEY") if "googleapis" in os.getenv("LLM_BASE_URL", "").lower() else None
     )
@@ -70,11 +70,11 @@ def _get_configured_providers() -> list[ProviderConfig]:
                 name="Google-Gemini",
                 base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
                 api_key=gemini_key,
-                models=["gemini-2.5-flash", "gemini-2.5-pro"],
+                models=["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"],
             )
         )
 
-    # 4. OpenRouter (Free Tier endpoints)
+    # 4. OpenRouter (Verified Free Tier models)
     openrouter_key = os.getenv("OPENROUTER_API_KEY")
     if openrouter_key:
         providers.append(
@@ -84,25 +84,29 @@ def _get_configured_providers() -> list[ProviderConfig]:
                 api_key=openrouter_key,
                 models=[
                     "meta-llama/llama-3.3-70b-instruct:free",
+                    "google/gemini-2.0-flash-exp:free",
                     "deepseek/deepseek-r1:free",
-                    "qwen/qwen-2.5-72b-instruct:free",
+                    "qwen/qwen-2.5-coder-32b-instruct:free",
                 ],
             )
         )
 
-    # 5. Generic / Fallback LLM_API_KEY (if user used legacy single env vars)
+    # 5. Generic / Custom Gateway (only if LLM_API_KEY is custom and not already covered)
     legacy_key = os.getenv("LLM_API_KEY")
-    legacy_base = os.getenv("LLM_BASE_URL", "https://api.groq.com/openai/v1")
+    legacy_base = os.getenv("LLM_BASE_URL", "").strip()
     legacy_model = os.getenv("LLM_MODEL", "llama-3.3-70b-versatile")
-    if legacy_key and not any(p.api_key == legacy_key for p in providers):
-        providers.append(
-            ProviderConfig(
-                name="Custom-Gateway",
-                base_url=legacy_base,
-                api_key=legacy_key,
-                models=[legacy_model],
+    if legacy_key:
+        is_already_covered = any(p.api_key == legacy_key for p in providers)
+        is_known_provider = any(k in legacy_base.lower() for k in ("groq", "cerebras", "googleapis", "google", "openrouter"))
+        if not is_already_covered and (not is_known_provider or not providers):
+            providers.append(
+                ProviderConfig(
+                    name="Custom-Gateway",
+                    base_url=legacy_base or "https://api.groq.com/openai/v1",
+                    api_key=legacy_key,
+                    models=[legacy_model],
+                )
             )
-        )
 
     return providers
 
@@ -144,7 +148,7 @@ async def chat_completion(
     """
     Multi-Provider Stacking Chat Completion:
       - Rotates requests across active providers (Groq, Cerebras, Gemini, OpenRouter).
-      - Seamlessly fails over to next provider if 429 (rate/daily limit) or 404 occurs.
+      - Seamlessly fails over to next provider if 429 (rate/daily limit), 404, or 400 occurs.
     """
     global _rr_provider_idx
     providers = _get_configured_providers()
@@ -160,7 +164,8 @@ async def chat_completion(
         start_idx = _rr_provider_idx % len(providers)
         _rr_provider_idx = (_rr_provider_idx + 1) % len(providers)
 
-    ordered_providers = providers[start_idx:] + providers[start_idx:]
+    # Correct circular slicing through ALL configured providers
+    ordered_providers = providers[start_idx:] + providers[:start_idx]
     current_messages = _trim_messages(messages, max_chars=4000)
     last_exc: Exception | None = None
 
@@ -190,8 +195,8 @@ async def chat_completion(
                 err = str(exc).lower()
                 print(f"  [LLM Warning] {provider.name} ({model_name}) failed: {exc}")
 
-                # 1. Decommissioned / 404 / Model Not Found -> 1-hour cooldown
-                if any(k in err for k in ("404", "decommissioned", "not_found", "does not exist", "no longer supported")):
+                # 1. Unavailable / Decommissioned / 404 / Paid model slug -> 1-hour cooldown & continue to next model
+                if any(k in err for k in ("404", "decommissioned", "not_found", "does not exist", "unavailable for free", "no longer supported")):
                     _set_cooldown(provider.name, model_name, duration_seconds=3600)
                     await asyncio.sleep(0.2)
                     continue
@@ -202,7 +207,7 @@ async def chat_completion(
                     _set_cooldown(provider.name, model_name, duration_seconds=86400)
                     current_messages = _trim_messages(current_messages, max_chars=2500)
                     await asyncio.sleep(0.3)
-                    break  # Break out of this provider to try the next provider immediately!
+                    break  # Try next provider immediately!
 
                 # 3. Rate Limit / TPM Spike (429 / 413) -> 60s cooldown, failover to next provider
                 elif any(k in err for k in ("429", "413", "rate_limit", "quota", "too large", "tokens per minute")):
@@ -210,11 +215,11 @@ async def chat_completion(
                     _set_cooldown(provider.name, model_name, duration_seconds=60)
                     current_messages = _trim_messages(current_messages, max_chars=2500)
                     await asyncio.sleep(0.3)
-                    break  # Break out of this provider to try the next provider immediately!
+                    break  # Try next provider immediately!
 
-                # 4. Tool Schema format error -> Retry with sanitized messages
+                # 4. Tool Schema format error -> Retry next model/provider
                 elif "400" in err and tools:
-                    _set_cooldown(provider.name, model_name, duration_seconds=30)
+                    _set_cooldown(provider.name, model_name, duration_seconds=60)
                     await asyncio.sleep(0.3)
                     continue
                 else:
