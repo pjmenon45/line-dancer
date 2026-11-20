@@ -136,16 +136,16 @@ def openai_tool_schemas() -> list[dict[str, Any]]:
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "spec_scope": {
+                        "feature": {
                             "type": "string",
-                            "description": "Feature or area, e.g. 'RedCap' or 'network slicing in NR'",
+                            "description": "Feature or area, e.g. 'RedCap', 'CHF implementation' or '5G handover'",
                         },
-                        "focus": {
+                        "domain": {
                             "type": "string",
-                            "description": "Optional focus, e.g. 'Rel-17' or 'UE requirements'",
+                            "description": "Optional domain context, e.g. 'charging', 'security', 'mobility' or 'radio'",
                         },
                     },
-                    "required": ["spec_scope"],
+                    "required": ["feature"],
                 },
             },
         },

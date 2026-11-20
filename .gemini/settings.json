@@ -4,7 +4,7 @@
       "command": "npx",
       "args": ["-y", "3gpp-mcp-charging@latest", "serve"],
       "env": {
-        "HUGGINGFACE_TOKEN": "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"
+        "HUGGINGFACE_TOKEN": "$HUGGINGFACE_TOKEN"
       }
     }
   }
